@@ -1,5 +1,8 @@
 #pragma once
 
+#include <type_traits>
+
+#include "core/Name.hpp"
 #include "core/Vec2.hpp"
 
 namespace rf {
@@ -15,6 +18,12 @@ namespace rf {
 // than jumps, and its nozzle slews at a finite rate. Every one of those is a
 // constraint the fly-by-wire has to fly around instead of wishing away.
 struct Thruster {
+    // What the crew would call it: "main", "nose-left", "main-stbd". Purely a
+    // label -- nothing in the physics or the allocator reads it, and nothing may
+    // start to, or layouts would stop being interchangeable. It exists so that a
+    // diagnostic can say *which* nozzle is misbehaving instead of "index 3".
+    ThrusterName name{};
+
     // --- geometry ---------------------------------------------------------
     // Where it is bolted to the hull, body frame, metres from the centre of
     // mass. This is what produces torque; a thruster whose line of action
@@ -76,5 +85,12 @@ struct ThrusterState {
 
     bool idle() const { return !lit && thrust <= Real(0) && ignitionTimer <= Real(0); }
 };
+
+// Both of these are copied wholesale into a Snapshot a thousand times a second.
+// Asserted rather than hoped for, because the failure mode of adding a
+// std::string field here is not a compile error -- it is a heap allocation on
+// the publish path that nothing would report.
+static_assert(std::is_trivially_copyable_v<Thruster>);
+static_assert(std::is_trivially_copyable_v<ThrusterState>);
 
 }  // namespace rf

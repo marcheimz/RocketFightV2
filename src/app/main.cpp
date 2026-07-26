@@ -3,10 +3,13 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <vector>
 
 #include "core/World.hpp"
 #include "data/RocketCatalogue.hpp"
@@ -20,25 +23,48 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-rf::WorldConfig chooseWorld(int argc, char** argv, const rf::RocketCatalogue& catalogue) {
-    bool        orbit = false;
+struct Options {
+    bool        orbit{false};
     std::string rocket;
+};
+
+Options parseOptions(int argc, char** argv, const rf::RocketCatalogue& catalogue) {
+    Options opts;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
-        if (arg == "--world=orbit") orbit = true;
-        if (arg == "--world=empty") orbit = false;
-        if (arg.rfind("--rocket=", 0) == 0) rocket = arg.substr(9);
+        if (arg == "--world=orbit") opts.orbit = true;
+        if (arg == "--world=empty") opts.orbit = false;
+        if (arg.rfind("--rocket=", 0) == 0) opts.rocket = arg.substr(9);
     }
 
-    if (!rocket.empty() && !catalogue.find(rocket)) {
-        std::cerr << "unknown rocket '" << rocket << "', available:";
+    if (!opts.rocket.empty() && !catalogue.find(opts.rocket)) {
+        std::cerr << "unknown rocket '" << opts.rocket << "', available:";
         for (const std::string& n : catalogue.names()) std::cerr << " " << n;
         std::cerr << "\n";
     }
+    return opts;
+}
 
-    const rf::RocketSpec& spec = catalogue.findOrFirst(rocket);
-    return orbit ? rf::orbitWorld(spec) : rf::defaultWorld(spec);
+// One world per vehicle, all with the same scenario. The app builds these
+// because it is the layer that owns the catalogue -- the simulation is handed
+// plain WorldConfig values and never learns that rockets come from files, which
+// is the same reason `--rocket=` was always resolved here.
+std::vector<rf::WorldConfig> buildRoster(const Options& opts, const rf::RocketCatalogue& catalogue) {
+    std::vector<rf::WorldConfig> roster;
+    roster.reserve(catalogue.all().size());
+    for (const rf::RocketSpec& spec : catalogue.all()) {
+        roster.push_back(opts.orbit ? rf::orbitWorld(spec) : rf::defaultWorld(spec));
+    }
+    return roster;
+}
+
+std::size_t rosterIndexOf(const rf::RocketCatalogue& catalogue, const std::string& name) {
+    const std::vector<rf::RocketSpec>& all = catalogue.all();
+    for (std::size_t i = 0; i < all.size(); ++i) {
+        if (all[i].name.view() == name) return i;
+    }
+    return 0;   // findOrFirst's fallback, spelled as an index
 }
 
 // Open on a view that actually contains the interesting things. Starting zoomed
@@ -72,9 +98,12 @@ int main(int argc, char** argv) {
         return EXIT_FAILURE;
     }
 
-    const rf::WorldConfig worldConfig = chooseWorld(argc, argv, catalogue);
+    const Options                      opts    = parseOptions(argc, argv, catalogue);
+    const std::vector<rf::WorldConfig> roster  = buildRoster(opts, catalogue);
+    const std::size_t                  startAt = rosterIndexOf(catalogue, opts.rocket);
 
-    rf::SimulationLoop sim(worldConfig, state, commands);
+    rf::SimulationLoop sim(roster[startAt], state, commands);
+    sim.setWorldRoster(roster, startAt);   // before the thread exists, so no lock is needed
     std::thread simThread([&sim] { sim.run(); });
 
     sf::RenderWindow window(sf::VideoMode({1280u, 720u}), "RocketFightV2");
@@ -85,12 +114,16 @@ int main(int argc, char** argv) {
     rf::InputTranslator input;
 
     camera.setViewportPixels(window.getSize());
-    camera.setWidthMeters(framingWidth(worldConfig));
+    camera.setWidthMeters(framingWidth(roster[startAt]));
 
     bool      showInputDebug = false;
     auto      lastFrame      = Clock::now();
     auto      lastAcquire    = Clock::now();
     rf::Real  frameRate      = 0;
+
+    // The vehicle is switched on the simulation thread, so the app learns about
+    // it the only way it is allowed to: by reading the published snapshot.
+    std::string flying;
 
     while (window.isOpen()) {
         while (const std::optional event = window.pollEvent()) {
@@ -114,7 +147,17 @@ int main(int argc, char** argv) {
         if (state.acquire()) lastAcquire = Clock::now();
         const rf::Snapshot& snap = state.read();
 
-        if (!snap.rockets.empty()) camera.follow(snap.rockets.front().pos);
+        if (!snap.rockets.empty()) {
+            camera.follow(snap.rockets.front().pos);
+
+            // A new airframe means a fresh start, so re-frame rather than leave
+            // the pilot wherever the last vehicle's zoom happened to be.
+            const std::string_view name = snap.rockets.front().spec.name.view();
+            if (name != flying) {
+                flying = name;
+                camera.setWidthMeters(framingWidth(roster[rosterIndexOf(catalogue, flying)]));
+            }
+        }
 
         const auto now      = Clock::now();
         const auto frameDt  = std::chrono::duration<rf::Real>(now - lastFrame).count();

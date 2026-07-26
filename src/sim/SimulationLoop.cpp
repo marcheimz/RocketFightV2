@@ -1,7 +1,9 @@
 #include "sim/SimulationLoop.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <thread>
+#include <utility>
 
 #include "control/RocketFlyByWire.hpp"
 
@@ -37,13 +39,39 @@ SimulationLoop::SimulationLoop(WorldConfig cfg, StateChannel& state, CommandQueu
     layered_ = std::make_unique<LayeredController>(std::make_unique<GamepadIntentSource>(input_));
     direct_  = std::make_unique<DirectHumanController>(input_);
 
-    layered_->reset(world_.config().seed, world_.config());
-    direct_->reset(world_.config().seed, world_.config());
+    restart();
+}
+
+void SimulationLoop::setWorldRoster(std::vector<WorldConfig> roster, std::size_t current) {
+    roster_  = std::move(roster);
+    current_ = roster_.empty() ? 0 : std::min(current, roster_.size() - 1);
 }
 
 Controller& SimulationLoop::activeController() {
     return flyByWire_.load(std::memory_order_relaxed) ? *layered_
                                                       : static_cast<Controller&>(*direct_);
+}
+
+void SimulationLoop::restart() {
+    // The controllers are built against the vehicle: the fly-by-wire's deadband,
+    // dead-time compensation and allocator all come out of the spec, so a reset
+    // that skipped this would fly the new airframe with the old one's numbers.
+    layered_->reset(world_.config().seed, world_.config());
+    direct_->reset(world_.config().seed, world_.config());
+    held_ = {};
+}
+
+void SimulationLoop::cycleVehicle(int step) {
+    if (roster_.size() < 2) return;
+
+    const auto n = static_cast<int>(roster_.size());
+    current_     = static_cast<std::size_t>(((static_cast<int>(current_) + step) % n + n) % n);
+
+    // A whole new World rather than a mutated one. Swapping the vehicle changes
+    // the thruster count, the inertia and the actuator state all at once, and
+    // "reset with a different spec" is exactly what constructing one is.
+    world_ = World(roster_[current_]);
+    restart();
 }
 
 void SimulationLoop::handleCommand(const Command& c) {
@@ -52,9 +80,13 @@ void SimulationLoop::handleCommand(const Command& c) {
         switch (c.button) {
             case InputButton::Reset:
                 world_.reset();
-                layered_->reset(world_.config().seed, world_.config());
-                direct_->reset(world_.config().seed, world_.config());
-                held_ = {};
+                restart();
+                return;
+            case InputButton::NextVehicle:
+                cycleVehicle(1);
+                return;
+            case InputButton::PrevVehicle:
+                cycleVehicle(-1);
                 return;
             case InputButton::ToggleDirect:
                 flyByWire_.store(!flyByWire_.load(std::memory_order_relaxed),

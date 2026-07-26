@@ -89,14 +89,14 @@ carries its `tick` and `time`, which is everything an interpolating renderer wou
 ```
 src/
   core/         Vec2, Body, Thruster, RocketSpec, RocketTypes, Rocket, World, integrator,
-                Command, ControlInput, Intent, Observation, Snapshot.
+                Command, ControlInput, Intent, Observation, Snapshot, InlineName.
                 Pure C++. No SFML. No threads. No I/O. No wall clock.
   control/      IntentSource, FlyByWire, Controller; LayeredController composing the first two;
                 ThrustAllocator; RocketFlyByWire<RocketT>; human + scripted implementations;
                 name→factory registry.
   sync/         StateChannel (triple buffer), CommandQueue (SPSC ring).
   sim/          SimulationLoop: real-time pacing, accumulator, publishing.
-  render/       SFML window, follow-camera, Renderer::draw(const Snapshot&).
+  render/       SFML window, follow-camera, actuator panel, Renderer::draw(const Snapshot&).
   app/          main(): wires window + input + sim thread.
   data/         RocketCatalogue: loads rockets/*.json into RocketSpec values.
                 The only place in the project that opens a file.
@@ -147,7 +147,8 @@ loaded from [`rockets/*.json`](rockets/) at startup:
   "mass": 1000.0, "length": 12.0, "width": 3.0,
 
   "thrusters": [
-    { "at": [-1.0, 0.0], "direction_deg": 0.0,
+    { "name": "main",            // a label, for the HUD -- never read by physics
+      "at": [-1.0, 0.0], "direction_deg": 0.0,
       "max_thrust": 40000.0,
       "min_thrust": 12000.0,     // cannot be throttled below 30%
       "ignition_time": 0.25,     // seconds before it produces anything
@@ -162,6 +163,17 @@ loaded from [`rockets/*.json`](rockets/) at startup:
 JSON rather than YAML because it is the more common format, and `nlohmann/json` can be told to
 accept comments — which removes YAML's one real advantage for hand-authored config. A vehicle
 definition nobody can annotate is a vehicle definition nobody maintains.
+
+Each thruster carries a `name` for the same reason: once the actuator panel shows sixteen bars,
+"nose-left is still lighting" is a sentence and "index 3 is still lighting" is a lookup. Nothing in
+the physics, the allocator or the fly-by-wire reads it, and nothing may start to — the moment
+behaviour depends on a name, layouts stop being interchangeable and the JSON stops being data.
+Omit it and a thruster is called `thruster-N` for its own index, so an unannotated file still
+loads and its labels still match its subscripts. The name is a fixed inline `char` buffer, not a
+`std::string`, because a `RocketSpec` is copied into every snapshot a thousand times a second;
+`static_assert(std::is_trivially_copyable_v<...>)` on `Thruster`, `RocketSpec`, `ControlInput` and
+`RocketView` is what stops that being re-learned the hard way, since the failure mode of adding an
+owning member is not a compile error but a silent allocation on the publish path.
 
 Attitude control is not postulated, it is *geometry*. Two opposed pairs at nose and tail: fire
 diagonally opposite ones and the forces cancel while the torques add, which is a pure couple; fire
@@ -213,6 +225,67 @@ pairs), `norcs` (no attitude thrusters at all, so it can only steer while the en
 `lander` (real side-thrusting authority, so it does not need to point its nose where it is going),
 and `interceptor` (twin mains either side of the centreline, making differential throttle a second
 source of torque). Adding a fifth means adding a file — no recompilation, and no new control code.
+
+### Watching the actuators
+
+The world view draws plumes from actual thrust, which means the most interesting thing the
+simulation models is the one thing it cannot show: between commanding a thruster and seeing it,
+there is simply nothing on screen. A quarter-second of ignition delay looks identical to a
+controller that decided to do nothing.
+
+So there is a side panel with one column per thruster, and it draws *both* numbers:
+
+- the **demand**, `ctrl.level[i] * maxThrust`, as an outline;
+- the **actual**, `actuators[i].thrust`, as a filled bar inside it;
+- a distinct cool colour while a thruster is **igniting** — commanded on, `ignitionTimer > 0`, not
+  yet `lit` — because at that moment the honest fill height is zero and a warmer colour would read
+  as "a little bit of thrust";
+- a tick at `minThrust`, since a lit thruster is somewhere in `[min, max]` and nowhere below, so a
+  bar resting on that line is the vehicle refusing rather than the controller being timid.
+
+The outline jumps the instant the fly-by-wire commits and the fill crawls up behind it. That gap is
+the dead time every one of the control problems above is really about, and it is the reason the
+panel is a first-class part of the renderer rather than a debug overlay.
+
+Each bar is normalised against its own thruster's maximum, so a 2.5 kN attitude puff at full
+deflection reads as full — which is what "is this nozzle saturated?" means. The absolute figure is
+in the label, next to the name, so the two questions stay separable.
+
+Thrust is only half of what an actuator lags on, so under each bar — for the nozzles that can
+actually move — is a horizontal strip spanning `[-maxGimbal, +maxGimbal]` with a marked centre,
+saying the same two things in the same grammar: **the commanded deflection as an outline growing
+out of zero, the angle the nozzle has actually reached as a fill inside it.** A gimbal slews rather
+than snaps, so a fill trailing its outline is that travel happening, and a fill still on the
+opposite side of centre is a reversal in progress — the vehicle being turned the wrong way *right
+now* by a nozzle that has been told to turn it the other way. On `norcs`, whose only means of
+steering is that nozzle, going stop to stop takes 1.6 s; without the strip, a second and a half of
+committed-but-not-yet-arrived attitude command looks exactly like a controller doing nothing, which
+is the same lie the thrust bars exist to stop the plumes telling.
+
+Only vehicles that have a gimbal somewhere get the row at all — no empty band on a rocket that
+cannot steer that way — and within the row a fixed nozzle simply has no strip rather than one
+pinned at centre, which would read as "aimed straight" instead of "cannot move". Mixed layouts are
+the normal case: `classic` and `lander` gimbal one main and fly four fixed puffers, `interceptor`
+gimbals two, `norcs` has nothing else. The strip is drawn whether or not the engine is lit, because
+a nozzle has an angle either way and swinging it before ignition is a real tactic — though the
+torque it buys is proportional to throttle, so a deflected nozzle on a cold engine is doing nothing
+yet, and the bar above it says so.
+
+Everything it needs is already in the snapshot: `RocketView` carries `spec`, `ctrl` and
+`actuators`. The panel reaches into nothing.
+
+### The window
+
+The window is resizable, and resizing changes **how much world is visible, not how big things
+look**: the camera holds metres-per-pixel across the change and lets the framed width follow the
+new pixel width. Zoom stays something the wheel does on purpose. The aspect ratio is derived from
+the live viewport, so nothing is ever stretched.
+
+Screen-space overlays build their own view from `window.getSize()` rather than using
+`getDefaultView()`. SFML fixes the default view at window *creation* and its resize handler only
+recomputes the current view's viewport — so after a drag, the default view still describes the old
+pixel size and everything drawn through it comes out stretched and mispositioned. That is a bug
+that only appears once somebody resizes, which is exactly the kind that ships.
 
 ### The tick
 
@@ -472,8 +545,9 @@ cheap to add once the plumbing underneath them is right, and expensive to retrof
 - [x] `sync`: triple-buffered `StateChannel`, SPSC `CommandQueue`
 - [x] `sim`: 1 kHz paced loop on its own thread, publishing snapshots, catch-up capped so a stall
       cannot spiral
-- [x] `render`: window, follow-camera with zoom, rocket + thrust plume, boundary circle, and a
-      static star grid — in empty space with no reference points, motion is otherwise invisible
+- [x] `render`: resizable window, follow-camera with zoom, rocket + thrust plume, boundary circle,
+      a static star grid — in empty space with no reference points, motion is otherwise invisible —
+      and a per-thruster actuator panel showing demand against reality
 - [x] `control`: all three layers — `IntentSource`/`FlyByWire`/`Controller`, `LayeredController`,
       a `HumanIntentSource` (keyboard → `Intent`), a `RocketFlyByWire` (PD attitude hold + throttle
       law), a `DirectHumanController` for raw manual flight, a trivial scripted end-to-end
@@ -482,9 +556,10 @@ cheap to add once the plumbing underneath them is right, and expensive to retrof
       no metrics yet
 - [x] `tests`: determinism (double-run hash equality), integrator accuracy against a closed-form
       circular orbit, `StateChannel`/`CommandQueue` correctness under real thread contention,
-      torque from off-centre force, out-of-bounds termination, and a fly-by-wire convergence test
+      torque from off-centre force, out-of-bounds termination, a fly-by-wire convergence test
       (commanded acceleration is achieved within a tolerance, and heading settles without
-      oscillating)
+      oscillating), thruster-name parsing and defaulting, and changing vehicle across the command
+      queue on a live simulation thread
 
 Deferred by design: collisions, projectiles, fuel, metrics and scoring, learned controllers,
 multiple rockets, render interpolation.
@@ -518,23 +593,46 @@ and no allocation: the stick opens thruster groups, and whatever the ship then d
 problem.
 
 **Always:** `Start`/`Tab` toggles fly-by-wire vs direct, `A`/`Space` fires (wired through, no
-projectiles yet), `Back`/`R` resets the world, scroll zooms, `F1` shows the raw input overlay,
-`Esc` quits.
+projectiles yet), `Back`/`R` resets the world, `LB`/`RB` or `[`/`]` cycles the vehicle, scroll
+zooms, `F1` shows the raw input overlay, `Esc` quits.
 
 Run `./build/rocketfight --world=orbit` for the planet, or `--world=empty` (the default) for
-zero-g, and `--rocket=classic|norcs|lander|interceptor` to pick the airframe. They fly very
-differently, and no controller code changes between them.
+zero-g, and `--rocket=classic|norcs|lander|interceptor` to pick the airframe you start in. They fly
+very differently, and no controller code changes between them.
+
+#### Changing vehicle at runtime
+
+Swapping airframes means a different thruster count, a different inertia and a different set of
+live actuators, so it is not a mutation of the world — it is a new one. The `World` lives on the
+simulation thread and nothing on the render side may reach it, which is the invariant the whole
+snapshot design exists to protect.
+
+So the app, which is the layer that owns the catalogue, builds one `WorldConfig` per rocket up
+front and hands the list to the `SimulationLoop` before the thread starts. `NextVehicle` and
+`PrevVehicle` then travel down the ordinary command queue like any other button, and the
+simulation thread rebuilds its `World` at a tick boundary and re-`reset()`s both controllers
+against the new config — the fly-by-wire's deadband, dead-time compensation and allocator are all
+derived from the spec, so skipping that would fly the new airframe with the old one's numbers.
+
+The two threads still share exactly two lock-free objects. There is no mutex and no third channel:
+the roster is written before the thread exists and read only by it, and the render side learns
+which vehicle it is flying the only way it is allowed to — by reading `spec.name` out of the
+published snapshot, which is also what tells it to re-frame the camera.
+
+`rf_sim` sees a plain `std::vector<WorldConfig>` and still has no idea that rockets are loaded from
+files, so it gains no dependency on `rf_data`.
 
 ## Status
 
-Running, with vehicles as data and actuators that fight back. Measured on a 20-core machine:
+Running, with vehicles as data, actuators that fight back, and a panel that shows them doing it.
+Measured on a 20-core machine:
 
 - **Simulation:** a steady 1000.0 Hz at 0.0% of the tick budget, no catch-up resyncs.
 - **Rendering:** 120 fps against vsync, snapshot age under 0.01 ms — the renderer is never more
   than a single tick behind, which is why it needs no interpolation.
-- **Headless:** 116 M ticks/s across the pool, ~116,000x real time, sweeping every controller
+- **Headless:** 91 M ticks/s across the pool, ~91,000x real time, sweeping every controller
   against every rocket in both worlds, with identical jobs producing identical state hashes.
-- **Tests:** 58 cases, 2452 assertions, all passing.
+- **Tests:** 64 cases, 2520 assertions, all passing.
 
 Physics, determinism and data-loading are asserted tightly. The closed-loop flying checks are
 deliberately loose — they exist to catch "this vehicle cannot be flown at all", not to pin a set of

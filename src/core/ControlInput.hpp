@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <type_traits>
 
 #include "core/RocketSpec.hpp"
 
@@ -36,5 +37,7 @@ struct ControlInput {
         return max > Real(0) ? sum / max : Real(0);
     }
 };
+
+static_assert(std::is_trivially_copyable_v<ControlInput>);
 
 }  // namespace rf

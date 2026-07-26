@@ -12,6 +12,7 @@
 
   "thrusters": [
     {
+      "name": "main",
       "at": [-1.0, 0.0],
       "direction_deg": 0.0,
       "max_thrust": 38000.0,

@@ -13,6 +13,7 @@
 
   "thrusters": [
     {
+      "name": "main",
       "at": [-1.0, 0.0],
       "direction_deg": 0.0,
       "max_thrust": 30000.0,
@@ -25,6 +26,7 @@
     },
 
     {
+      "name": "nose-left",
       "at": [0.8, 0.0],
       "direction_deg": 90.0,
       "max_thrust": 6000.0,
@@ -34,6 +36,7 @@
       "ramp_down": 90000.0
     },
     {
+      "name": "nose-right",
       "at": [0.8, 0.0],
       "direction_deg": -90.0,
       "max_thrust": 6000.0,
@@ -43,6 +46,7 @@
       "ramp_down": 90000.0
     },
     {
+      "name": "tail-left",
       "at": [-0.8, 0.0],
       "direction_deg": 90.0,
       "max_thrust": 6000.0,
@@ -52,6 +56,7 @@
       "ramp_down": 90000.0
     },
     {
+      "name": "tail-right",
       "at": [-0.8, 0.0],
       "direction_deg": -90.0,
       "max_thrust": 6000.0,

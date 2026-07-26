@@ -32,6 +32,8 @@ constexpr sf::Joystick::Axis kTrigL  = sf::Joystick::Axis::Z;
 
 constexpr unsigned kBtnA     = 0;
 constexpr unsigned kBtnX     = 2;
+constexpr unsigned kBtnLB    = 4;
+constexpr unsigned kBtnRB    = 5;
 constexpr unsigned kBtnBack  = 6;
 constexpr unsigned kBtnStart = 7;
 
@@ -83,6 +85,8 @@ void InputTranslator::pollGamepad(CommandQueue& out) {
     emitButton(out, InputButton::KillVelocity, sf::Joystick::isButtonPressed(kPad, kBtnX));
     emitButton(out, InputButton::ToggleDirect, sf::Joystick::isButtonPressed(kPad, kBtnStart));
     emitButton(out, InputButton::Reset, sf::Joystick::isButtonPressed(kPad, kBtnBack));
+    emitButton(out, InputButton::PrevVehicle, sf::Joystick::isButtonPressed(kPad, kBtnLB));
+    emitButton(out, InputButton::NextVehicle, sf::Joystick::isButtonPressed(kPad, kBtnRB));
 
     for (std::size_t i = 0; i < debug_.rawAxes.size(); ++i) {
         debug_.rawAxes[i] =
@@ -107,6 +111,8 @@ void InputTranslator::pollKeyboard(CommandQueue& out) {
     emitButton(out, InputButton::KillVelocity, keyDown(Key::X));
     emitButton(out, InputButton::ToggleDirect, keyDown(Key::Tab));
     emitButton(out, InputButton::Reset, keyDown(Key::R));
+    emitButton(out, InputButton::PrevVehicle, keyDown(Key::LBracket));
+    emitButton(out, InputButton::NextVehicle, keyDown(Key::RBracket));
 }
 
 void InputTranslator::poll(CommandQueue& out) {

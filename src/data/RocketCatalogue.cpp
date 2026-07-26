@@ -32,6 +32,12 @@ Real optional(const Json& obj, const char* key, Real fallback) {
 Thruster parseThruster(const Json& j, const RocketSpec& spec) {
     Thruster t;
 
+    // Named after its job, because "nose-left is still lighting" is a readable
+    // diagnostic and "thruster 1 is still lighting" is not. Optional: a layout
+    // that has not been annotated still loads, it just gets positional names.
+    t.name = ThrusterName::from(
+        j.value("name", "thruster-" + std::to_string(spec.count())));
+
     // Mount is given as a fraction of half-length and half-width, so a thruster
     // "at the tail" stays at the tail when the hull is resized.
     const Json& at = j.at("at");

@@ -3,9 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
-#include <cstring>
-#include <string_view>
+#include <type_traits>
 
+#include "core/Name.hpp"
 #include "core/Thruster.hpp"
 
 namespace rf {
@@ -14,21 +14,6 @@ namespace rf {
 // and every control input is sized to match, and keeping both trivially
 // copyable means publishing at 1000 Hz never allocates.
 inline constexpr std::size_t kMaxThrusters = 16;
-
-// A short inline name, for the same reason: a std::string here would make the
-// snapshot allocate on every publish.
-struct RocketName {
-    std::array<char, 24> chars{};
-
-    static RocketName from(std::string_view text) {
-        RocketName out;
-        const std::size_t n = std::min(text.size(), out.chars.size() - 1);
-        std::memcpy(out.chars.data(), text.data(), n);
-        return out;
-    }
-
-    std::string_view view() const { return std::string_view(chars.data()); }
-};
 
 // A rocket type's physical definition. Everything that differs between vehicles
 // lives here, and nothing that differs between vehicles lives anywhere else.
@@ -186,5 +171,7 @@ struct RocketSpec {
         return forward > Real(0) && maxLateralAccel() < forward * Real(0.2);
     }
 };
+
+static_assert(std::is_trivially_copyable_v<RocketSpec>);
 
 }  // namespace rf

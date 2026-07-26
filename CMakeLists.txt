@@ -166,8 +166,9 @@ add_executable(rf_tests
     tests/test_rockets.cpp
     tests/test_actuators.cpp
     tests/test_data.cpp
+    tests/test_sim.cpp
 )
 target_link_libraries(rf_tests PRIVATE
-    rf_core rf_control rf_data rf_sync rf_eval doctest::doctest Threads::Threads rf_warnings)
+    rf_core rf_control rf_data rf_sim rf_sync rf_eval doctest::doctest Threads::Threads rf_warnings)
 
 add_test(NAME rf_tests COMMAND rf_tests)

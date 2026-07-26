@@ -9,6 +9,9 @@
   // "at" is [along, across] as a fraction of half-length and half-width, so the
   // layout survives resizing the hull. "direction_deg" is the direction of the
   // force applied to the hull: 0 is forward, 90 is to the left.
+  //
+  // Each thruster's "name" is what the actuator panel labels its bar with, so it
+  // is named for the direction it shoves the hull, not for the side it sits on.
   "name": "classic",
   "mass": 1000.0,
   "length": 12.0,
@@ -16,6 +19,7 @@
 
   "thrusters": [
     {
+      "name": "main",
       "at": [-1.0, 0.0],
       "direction_deg": 0.0,
       "max_thrust": 40000.0,
@@ -34,6 +38,7 @@
     // small corrections -- but with a 30% floor they still cannot make an
     // arbitrarily small one.
     {
+      "name": "nose-left",
       "at": [0.8333333333, 0.0],
       "direction_deg": 90.0,
       "max_thrust": 2500.0,
@@ -43,6 +48,7 @@
       "ramp_down": 40000.0
     },
     {
+      "name": "nose-right",
       "at": [0.8333333333, 0.0],
       "direction_deg": -90.0,
       "max_thrust": 2500.0,
@@ -52,6 +58,7 @@
       "ramp_down": 40000.0
     },
     {
+      "name": "tail-left",
       "at": [-0.8333333333, 0.0],
       "direction_deg": 90.0,
       "max_thrust": 2500.0,
@@ -61,6 +68,7 @@
       "ramp_down": 40000.0
     },
     {
+      "name": "tail-right",
       "at": [-0.8333333333, 0.0],
       "direction_deg": -90.0,
       "max_thrust": 2500.0,

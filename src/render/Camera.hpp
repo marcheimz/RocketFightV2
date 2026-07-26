@@ -21,7 +21,11 @@ inline float toViewDegrees(Real worldRadians) {
 
 class Camera {
 public:
-    void setViewportPixels(sf::Vector2u px) { viewport_ = px; }
+    // Resizing the window changes *how much world is visible*, not how big
+    // things look: the scale in metres-per-pixel is held across the change and
+    // the framed width follows the new pixel width. Zoom stays a deliberate act
+    // of the wheel rather than a side effect of dragging a corner.
+    void setViewportPixels(sf::Vector2u px);
 
     void follow(Vec2 target) { center_ = target; }
 

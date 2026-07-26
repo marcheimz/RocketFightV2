@@ -1,5 +1,6 @@
 #pragma once
 
+#include <type_traits>
 #include <vector>
 
 #include "core/ControlInput.hpp"
@@ -30,6 +31,11 @@ struct RocketView {
     // correctly shows nothing.
     std::array<ThrusterState, kMaxThrusters> actuators{};
 };
+
+// The snapshot itself owns vectors, whose capacity the triple buffer reuses; the
+// per-rocket payload is what must never grow an owning member, or filling those
+// vectors would start allocating per element.
+static_assert(std::is_trivially_copyable_v<RocketView>);
 
 // Diagnostics measured by the simulation loop, not by the world. World::snapshot
 // leaves these zeroed -- they are wall-clock facts, and the world does not have

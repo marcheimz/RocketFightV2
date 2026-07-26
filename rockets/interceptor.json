@@ -13,6 +13,9 @@
 
   "thrusters": [
     {
+      // Port is the +y side, which is the side a 90-degree thruster shoves
+      // towards -- the same convention the attitude quad below is named by.
+      "name": "main-port",
       "at": [-1.0, 0.8],
       "direction_deg": 0.0,
       "max_thrust": 24000.0,
@@ -24,6 +27,7 @@
       "gimbal_rate_deg": 50.0
     },
     {
+      "name": "main-stbd",
       "at": [-1.0, -0.8],
       "direction_deg": 0.0,
       "max_thrust": 24000.0,
@@ -36,6 +40,7 @@
     },
 
     {
+      "name": "nose-left",
       "at": [0.889, 0.0],
       "direction_deg": 90.0,
       "max_thrust": 2000.0,
@@ -45,6 +50,7 @@
       "ramp_down": 50000.0
     },
     {
+      "name": "nose-right",
       "at": [0.889, 0.0],
       "direction_deg": -90.0,
       "max_thrust": 2000.0,
@@ -54,6 +60,7 @@
       "ramp_down": 50000.0
     },
     {
+      "name": "tail-left",
       "at": [-0.889, 0.0],
       "direction_deg": 90.0,
       "max_thrust": 2000.0,
@@ -63,6 +70,7 @@
       "ramp_down": 50000.0
     },
     {
+      "name": "tail-right",
       "at": [-0.889, 0.0],
       "direction_deg": -90.0,
       "max_thrust": 2000.0,

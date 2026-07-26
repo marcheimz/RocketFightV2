@@ -27,6 +27,11 @@ enum class InputButton : std::uint8_t {
     KillVelocity,   // held: Intent::Mode::Velocity with a target of zero
     ToggleDirect,   // fly-by-wire <-> raw manual control
     Reset,
+    // Step through the vehicles the app handed the simulation. Which vehicles
+    // those are, and what "next" means, is decided on the simulation side; the
+    // translator only knows a button went down.
+    NextVehicle,
+    PrevVehicle,
     Count,
 };
 

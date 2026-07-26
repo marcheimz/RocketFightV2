@@ -2,6 +2,13 @@
 
 namespace rf {
 
+void Camera::setViewportPixels(sf::Vector2u px) {
+    if (px.x > 0 && viewport_.x > 0 && px.x != viewport_.x) {
+        setWidthMeters(widthMeters_ * static_cast<Real>(px.x) / static_cast<Real>(viewport_.x));
+    }
+    viewport_ = px;
+}
+
 void Camera::zoomBy(Real factor) {
     widthMeters_ = clamp(widthMeters_ * factor, kMinWidth, kMaxWidth);
 }

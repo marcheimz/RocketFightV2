@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include <string>
+#include <string_view>
 
 #include "data/RocketCatalogue.hpp"
 
@@ -95,6 +96,49 @@ TEST_CASE("bad definitions are rejected with a reason, not silently accepted") {
                     .has_value());
 }
 
+TEST_CASE("thrusters carry the name the file gave them") {
+    std::string error;
+    const auto  spec = parseRocketJson(minimalRocket(R"(, "name": "main-stbd")"), error);
+    REQUIRE_MESSAGE(spec.has_value(), error);
+
+    CHECK(spec->thrusters[0].name.view() == "main-stbd");
+}
+
+TEST_CASE("an unnamed thruster still gets a usable name") {
+    std::string error;
+    const auto  spec = parseRocketJson(R"({
+        "name": "anon", "mass": 100.0, "length": 5.0, "width": 1.0,
+        "thrusters": [
+            { "at": [-1, 0], "max_thrust": 500.0 },
+            { "at": [1, 0], "max_thrust": 500.0, "name": "nose" },
+            { "at": [0, 1], "max_thrust": 500.0 }
+        ]
+    })",
+                                       error);
+    REQUIRE_MESSAGE(spec.has_value(), error);
+
+    // Positional, and by index, so the fallback name and the array subscript
+    // agree -- a label reading "thruster-2" that means index 3 is worse than no
+    // label at all.
+    CHECK(spec->thrusters[0].name.view() == "thruster-0");
+    CHECK(spec->thrusters[1].name.view() == "nose");
+    CHECK(spec->thrusters[2].name.view() == "thruster-2");
+}
+
+TEST_CASE("an over-long name truncates rather than overflowing its buffer") {
+    std::string error;
+    const auto  spec =
+        parseRocketJson(minimalRocket(R"(, "name": "an-absurdly-long-thruster-name")"), error);
+    REQUIRE_MESSAGE(spec.has_value(), error);
+
+    // The name is a fixed inline buffer because the spec is copied into every
+    // snapshot; truncation is the deliberate failure mode, and it must still be
+    // null-terminated.
+    const std::string_view got = spec->thrusters[0].name.view();
+    CHECK(got.size() < spec->thrusters[0].name.chars.size());
+    CHECK(got == std::string_view("an-absurdly-long-thruster-name").substr(0, got.size()));
+}
+
 TEST_CASE("minimum thrust cannot exceed maximum") {
     std::string error;
     const auto  spec =
@@ -134,6 +178,23 @@ TEST_CASE("every shipped rocket is physically coherent") {
             CHECK(t.ignitionTime >= Real(0));
             // A gimbal that cannot move is a fixed nozzle wearing a costume.
             if (t.gimballed()) CHECK(t.gimbalRate > Real(0));
+        }
+    }
+}
+
+TEST_CASE("every shipped thruster is named, and named distinctly") {
+    for (const RocketSpec& spec : RocketCatalogue::instance().all()) {
+        INFO("rocket: " << std::string(spec.name.view()));
+
+        for (std::size_t i = 0; i < spec.count(); ++i) {
+            INFO("thruster: " << i);
+            CHECK_FALSE(spec[i].name.empty());
+
+            // The panel labels a column with this, so two nozzles sharing a name
+            // would make the display actively misleading.
+            for (std::size_t j = i + 1; j < spec.count(); ++j) {
+                CHECK(spec[i].name.view() != spec[j].name.view());
+            }
         }
     }
 }
