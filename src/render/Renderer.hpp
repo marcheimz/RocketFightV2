@@ -68,7 +68,8 @@ private:
     void drawBounds(sf::RenderWindow& window, const Snapshot& snap);
     void drawAttractors(sf::RenderWindow& window, const Snapshot& snap);
     void drawRocket(sf::RenderWindow& window, const RocketView& r, const Camera& camera);
-    void drawVectors(sf::RenderWindow& window, const RocketView& r, const Camera& camera);
+    void drawVectors(sf::RenderWindow& window, const RocketView& r, const Camera& camera,
+                     const CommandView& command);
     void drawActuatorPanel(sf::RenderWindow& window, const Snapshot& snap);
     void drawHud(sf::RenderWindow& window, const Snapshot& snap, const Camera& camera,
                  const Hud& hud);

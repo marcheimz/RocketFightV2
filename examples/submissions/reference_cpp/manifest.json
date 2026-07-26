@@ -1,0 +1,9 @@
+{
+  "name": "reference-cpp",
+  "description": "The project's built-in RocketFlyByWire wrapped in the C ABI. The baseline every submission is trying to beat.",
+  "author": "rocketfight",
+  "language": "binary",
+  "abi_version": 1,
+  "entry": "build/examples/reference_cpp/flybywire.so",
+  "note": "Submitted as a prebuilt binary, not as source, and that is the one way this example is unlike a real submission. flybywire.cpp includes control/RocketFlyByWire.hpp and links rf_control -- it reaches into src/, which the server's compiler deliberately cannot see (it passes only -I include). So it is built by this repository's own CMake and uploaded as the resulting .so. It is a baseline to beat, not a template to copy; start from examples/submissions/simple_c instead."
+}

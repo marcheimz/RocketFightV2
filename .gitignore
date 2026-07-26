@@ -76,3 +76,9 @@ scratch/
 *.log
 *.png
 *.replay
+
+# The submission server's store: submitted artifacts, compiled objects, per-run
+# results and the operator's weights.json. It is state a deployment owns, not
+# source, and it holds other people's uploaded code by design. `--data=PATH`
+# moves it somewhere outside the tree, which is what a real deployment should do.
+server-data/

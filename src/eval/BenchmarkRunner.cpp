@@ -5,6 +5,10 @@
 namespace rf {
 
 BenchmarkRun runBenchmark(const BenchmarkSpec& spec) {
+    return runBenchmark(spec, makeFlyByWire(spec.rocket));
+}
+
+BenchmarkRun runBenchmark(const BenchmarkSpec& spec, std::unique_ptr<FlyByWire> fbw) {
     // Zero-g, always -- defaultWorld, never orbitWorld.
     //
     // In an orbit gravity contributes to the measured acceleration and to every
@@ -19,13 +23,37 @@ BenchmarkRun runBenchmark(const BenchmarkSpec& spec) {
     World world(cfg);
 
     BenchmarkHarness harness(spec.config, spec.seed);
-    harness.reset(cfg);
+    harness.reset(cfg, std::move(fbw));
 
     ControlInput held{};
 
     // Same shape as SimulationLoop::tickOnce and runEpisode: fixed dt, the same
     // control decimation, the same zero-order hold. If this loop drifted from
     // those, a headless score would stop predicting what the game does.
+    //
+    // With one deliberate exception: unlike runEpisode (EpisodeRunner.cpp), this
+    // loop does NOT check World::anyOutOfBounds(). Every run integrates over
+    // exactly maxTicks, however far the vehicle wandered.
+    //
+    // That is the point, not an oversight. Acceleration mode is a random walk in
+    // velocity, so a stronger vehicle travels further under the identical
+    // normalised command sequence -- measured, the interceptor covers twice what
+    // classic does. Terminating on the bound would hand it a shorter run, and
+    // time-integrated metrics over unequal windows are not comparable. Ranking
+    // submissions requires that every one of them gets the same window.
+    //
+    // Drift is inert here in a way it would not be elsewhere: the benchmark runs
+    // in defaultWorld, which has no attractors, so accumulateGravity returns
+    // immediately and position feeds no force. No metric and no part of the
+    // fly-by-wire reads obs.pos. The run is byte-for-byte what it would have
+    // been at the origin.
+    //
+    // The exemption has a shelf life. Drift is close to ballistic rather than a
+    // random walk, because no rocket in rockets/ has a retro thruster: a command
+    // with a rearward component produces nothing rearward, leaving a standing
+    // bias along the nose. Measured, vehicles start crossing the 1000 km bound
+    // from around 450 s. Hence the cap on --seconds where the run length is
+    // chosen; see bench_main.cpp and runner_main.cpp.
     for (std::uint32_t i = 0; i < spec.maxTicks; ++i) {
         if (world.tick() % kControlEvery == 0) {
             held = harness.controller().evaluate(world.observe(0));

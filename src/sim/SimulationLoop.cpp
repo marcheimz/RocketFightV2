@@ -160,6 +160,16 @@ void SimulationLoop::publish(const SimStats& stats) {
     Snapshot& slot = state_->writeSlot();
     world_.snapshot(slot);
     slot.stats = stats;
+
+    // The command is the controller's to report and the loop's to reach, which
+    // is why it is filled in here rather than by the world -- the same split the
+    // wall-clock stats above already make. A controller with no notion of Intent
+    // says so by returning null, and the slot is a reused buffer, so this is
+    // written on every publish rather than only when there is something to say.
+    const Intent* commanded = activeController().lastIntent();
+    slot.command.valid      = commanded != nullptr;
+    slot.command.intent     = commanded != nullptr ? *commanded : Intent{};
+
     state_->publish();
 
     publishBenchmarkHud();

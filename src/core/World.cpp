@@ -101,7 +101,7 @@ void World::snapshot(Snapshot& out) const {
     }
 
     out.attractors = cfg_.attractors;
-    // stats stay zeroed: the world has no clock.
+    // stats and command stay zeroed: the world has no clock, and no controller.
 }
 
 std::uint64_t World::hash() const {

@@ -1,0 +1,8 @@
+{
+  "name": "simple-c",
+  "description": "A heading profile plus a throttle gate, in ~200 lines of C99 that include nothing but the ABI header. Proof the boundary is language-agnostic, and an easy score to beat.",
+  "author": "rocketfight",
+  "language": "c",
+  "abi_version": 1,
+  "entry": "flybywire.c"
+}

@@ -1,0 +1,19 @@
+#pragma once
+
+namespace rf {
+
+// Configured by CMake, for the same reason src/data/BuildPaths.hpp.in is: the
+// server has to be able to find the runner it forks and the header a submission
+// includes, from whatever directory it happens to be started in, with no
+// install step. Every one of these is overridable on the command line -- these
+// are the defaults, not the policy.
+inline constexpr const char* kDefaultRunnerPath = "@ROCKETFIGHT_RUNNER_PATH@";
+inline constexpr const char* kAbiIncludeDir     = "@ROCKETFIGHT_ABI_INCLUDE_DIR@";
+
+// The compilers this build was configured with, by absolute path. execv does no
+// PATH search on purpose: a server that resolved "cc" out of its environment
+// would be a server whose behaviour depends on how it was started.
+inline constexpr const char* kCCompiler   = "@CMAKE_C_COMPILER@";
+inline constexpr const char* kCxxCompiler = "@CMAKE_CXX_COMPILER@";
+
+}  // namespace rf

@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "core/ControlInput.hpp"
+#include "core/Intent.hpp"
 #include "core/RocketSpec.hpp"
 #include "core/Types.hpp"
 #include "core/Vec2.hpp"
@@ -46,6 +47,26 @@ struct SimStats {
     std::uint64_t catchUpResyncs{};  // times the loop gave up catching up
 };
 
+// What the pilot last asked for. Filled in by SimulationLoop from the active
+// Controller::lastIntent(), not by World, for exactly the reason SimStats is
+// not: a commanded intent is a fact about whoever is flying, and the world has
+// no controller any more than it has a clock.
+//
+// `valid` is not a convenience. A controller that does not think in terms of
+// Intent has no answer -- direct manual flight, an end-to-end policy -- and a
+// zeroed Intent is indistinguishable from a real command for zero acceleration,
+// so a renderer without this flag would draw a demand nobody made.
+struct CommandView {
+    bool   valid{};
+    Intent intent{};
+};
+
+// Same reason as RocketView: this rides in a snapshot published at 1000 Hz and
+// must never allocate. Intent holds a std::optional<Real>, which qualifies -- so
+// this makes a future change that stops qualifying a compile error rather than a
+// silent allocation on the publish path.
+static_assert(std::is_trivially_copyable_v<CommandView>);
+
 struct Snapshot {
     Tick tick{};
     Real time{};
@@ -55,6 +76,9 @@ struct Snapshot {
 
     Real     boundsRadius{};
     SimStats stats{};
+
+    // The command flown by rockets.front(), the one vehicle the loop controls.
+    CommandView command{};
 };
 
 }  // namespace rf

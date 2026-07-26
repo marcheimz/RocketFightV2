@@ -258,6 +258,13 @@ public:
     // a fly-by-wire built from this world's rocket, and cleared metrics.
     void reset(const WorldConfig& env);
 
+    // The same, with a *supplied* fly-by-wire instead of the built-in one. This
+    // is the seam a submission is dropped into: the sequence, the meter, the
+    // world and the loop are all the identical objects, so a submission and
+    // RocketFlyByWire face the same task by construction rather than by two
+    // code paths being kept in step.
+    void reset(const WorldConfig& env, std::unique_ptr<FlyByWire> fbw);
+
     Controller&             controller() { return *controller_; }
     BenchmarkIntentSource&  source() { return *source_; }
     const BenchmarkMonitor& monitor() const { return monitor_; }

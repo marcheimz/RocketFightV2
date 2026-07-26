@@ -100,8 +100,15 @@ src/
   app/          main(): wires window + input + sim thread.
   data/         RocketCatalogue: loads rockets/*.json into RocketSpec values.
                 The only place in the project that opens a file.
-  eval/         Scenario, episode runner, parallel batch runner, benchmark runner + JSON.
-tests/          Determinism hashes, integrator accuracy, channel/queue correctness.
+  eval/         Scenario, episode runner, parallel batch runner, benchmark runner + JSON,
+                and rocketfight_runner: one benchmark job in one process, which is the
+                only place a submitted library is ever loaded.
+  server/       Sandbox (fork + rlimits + wall-clock SIGKILL), Compile, Evaluator,
+                Leaderboard. Linux-only and unapologetically so.
+tests/          Determinism hashes, integrator accuracy, channel/queue correctness,
+                and the submission boundary's failure paths.
+include/        rocketfight/flybywire_abi.h -- the public submission contract. Its own
+                include root, so a submission cannot reach src/ by accident.
 ```
 
 `core`, `control` and `eval` have **no link dependency on SFML** — enforced by the CMake target
@@ -273,6 +280,54 @@ yet, and the bar above it says so.
 
 Everything it needs is already in the snapshot: `RocketView` carries `spec`, `ctrl` and
 `actuators`. The panel reaches into nothing.
+
+### The vectors on the ship
+
+Three lines leave the hull in the world view, and between them they say what the ship is doing and
+what it was asked to do:
+
+- **velocity**, green, drawn as *where you will be in one second* — so its length is a distance that
+  can be read against the grid rather than an arrow of arbitrary scale;
+- **net thrust**, orange, the vector sum of every firing nozzle. On a symmetric attitude burn it is
+  correctly zero: the ship is rotating, not accelerating, and the HUD should say so;
+- **the command**, dashed, in whichever of those two hues matches the current intent mode.
+
+The dash is the panel's grammar carried out into the world: demand is a ghost, reality is solid. It
+keeps the *hue* of the line it is being compared with, because it is the same quantity asked for
+rather than achieved — a third colour would read as a third thing. A cap across its tip keeps the
+endpoint readable in the good case, where the two lie on top of each other.
+
+Only the line matching the mode is drawn, never both: the two carry different units, and a length in
+one is not a length in the other. In acceleration mode `Intent::vector` is already a fraction of the
+vehicle's maximum, so it is multiplied by `maxForwardAccel()` and put through the **same** length
+mapping the achieved thrust just went through. That sharing is the entire point — two arrows on
+different scales would only ever say "some" and "some". In velocity mode the target gets the same
+one-second convention as the actual velocity, so the distance between the two tips is the tracking
+error in m/s, read straight off the screen.
+
+The interesting frame is the one where the ship is still slewing onto a new command: the dashed
+vector is at full length and there is no solid one at all, because the main engine is a quarter of a
+second into its ignition delay. That is the same dead time the actuator panel exists to show, said
+once more in the units the pilot actually commanded in.
+
+The renderer draws only from the `Snapshot`, and an `Intent` belongs to the controller, which lives
+on the simulation thread. So the command travels exactly the way `SimStats` does: a plain field that
+`World::snapshot` leaves zeroed and `SimulationLoop::publish` fills in from
+`Controller::lastIntent()`. They are the same shape of thing — a fact about whoever is flying, and
+the world has no controller any more than it has a clock. It carries a `valid` flag because
+`lastIntent()` legitimately returns null: `DirectHumanController` does not think in terms of intent
+at all, and a zeroed `Intent` is indistinguishable from a real command for zero acceleration. Flying
+direct therefore draws nothing, rather than an arrow nobody asked for.
+
+This costs the headless path nothing (it never fills the field) and determinism nothing (the state
+hash covers world state; presentation fields are not part of it). The `static_assert` on
+`std::is_trivially_copyable_v` sits beside the one on `RocketView` for the same reason — `Intent`
+holds a `std::optional<Real>`, it qualifies today, and the failure mode of a member that stops
+qualifying is a silent allocation on a path that runs a thousand times a second.
+
+It also comes for free while the benchmark is running, because the benchmark is not a special case:
+it is an `IntentSource` feeding the same active controller, so its scripted commands appear on the
+ship like anyone else's, and the step changes it makes are visible as they happen.
 
 ### The window
 
@@ -577,9 +632,35 @@ already lives.
 | `--rocket=NAME` | first in the catalogue | which airframe |
 | `--all` | off | sweep every rocket in the catalogue |
 | `--mode=accel\|velocity` | `accel` | which of the two experiments |
-| `--seconds=N` | 60 | simulated seconds per run |
+| `--seconds=N` | 60 | simulated seconds per run; refused above 300, see below |
 | `--seed=N` | fixed default | the sequence; accepts `0x…` |
 | `--compact` | off | one line instead of indented |
+
+#### Why the run length is capped
+
+The benchmark loop deliberately does **not** check `World::anyOutOfBounds()`, unlike `runEpisode`.
+Every run integrates over exactly the same number of ticks however far the vehicle wandered — and
+it has to, because acceleration mode is a random walk in velocity, so a stronger vehicle travels
+further under the identical normalised command sequence. Measured, the interceptor covers about
+twice what `classic` does. Terminating on the bound would hand it a shorter run, and
+time-integrated metrics over unequal windows are not comparable. Ranking submissions requires that
+every one of them gets the same window.
+
+Drift is inert here in a way it would not be elsewhere: the benchmark runs in `defaultWorld`, which
+has no attractors, so position feeds no force, and no metric or controller reads it. The run is
+byte-for-byte what it would have been at the origin.
+
+The exemption has a shelf life, though, and it is not the one you would guess. Drift is close to
+ballistic rather than a random walk, because **no rocket in `rockets/` has a retro thruster**: a
+command with a rearward component produces nothing rearward, leaving a standing bias along the
+nose. It is starkest on `lander`, which never rotates, and whose drift barely varies with seed at
+all. Measured across every rocket and 40 seeds, vehicles start crossing the 1000 km world bound
+from around **450 s** — earliest observed, the interceptor at 449 s.
+
+At the 60 s default the margin is roughly 17x, with the worst case reaching 6% of the bound and
+zero crossings in 1600 runs. So 300 s is not a physics limit; it is the edge of the validated
+envelope, and `--seconds` refuses to go past it rather than silently producing a run whose vehicles
+sit outside a boundary the rest of the engine treats as real.
 
 JSON on stdout, and nothing else:
 
@@ -637,6 +718,89 @@ world, and a reader that sees one field a control step out of date is showing a 
 perceive is stale. The input layering is intact — `InputTranslator` gained two buttons and still
 reports only that a button went down.
 
+## The submission server
+
+The other half: an agent submits a `FlyByWire`, the server builds it, runs the benchmark above
+against every vehicle in both modes, checks that it reproduces, and ranks it.
+
+> **[`SUBMISSIONS.md`](SUBMISSIONS.md) is the contract.** Everything a submitting agent needs — the
+> ABI function by function, units and sign conventions, the manifest, runnable build commands for C,
+> C++ and Rust, the real resource limits, the determinism rule, and a complete worked example — is
+> there, and it is written so that nobody has to read this source tree to make a submission work.
+
+```sh
+./build/rocketfight_server --port=8080 --data=server-data
+curl -X POST http://localhost:8080/api/submissions -F artifact=@flybywire.c -F manifest=@manifest.json
+```
+
+### The boundary is a C ABI, and the isolation is a process
+
+[`include/rocketfight/flybywire_abi.h`](include/rocketfight/flybywire_abi.h) is five C functions and
+four POD structs. Nothing of the host's C++ crosses it — no classes, no `std::` types, no
+exceptions, no allocator, no RTTI — which is what makes a Rust or a hand-written-C submission
+exactly as first-class as a C++ one, and it is checked rather than claimed: `simple_c` is *built as
+C99* by this repo's CMake, and would stop compiling the moment the ABI quietly became a C++ plugin
+interface.
+
+The observation deliberately carries **actual** actuator state — the thrust being produced, the
+angle the nozzle has reached — and not the last command. That single choice is what makes the
+ignition-delay and slew problem solvable at all; a controller that only knows what it asked for
+re-commands corrections already on their way and overshoots every time.
+
+**One job, one process.** `rocketfight_runner` loads one library, runs one configuration, prints one
+JSON object, exits. A submission's `rf_resolve` can spin forever, recurse until the stack is gone,
+or free a pointer it never allocated, and none of those can be contained from inside the process
+they happen in — there is no portable way to kill a hung function call, and a corrupted heap is
+corrupted for everybody sharing it. So the only honest containment is a process boundary, and
+everything about supervision belongs to the parent: the wall-clock deadline, the rlimits, the
+`SIGKILL` to the whole process group, the scratch directory, the scrubbed environment.
+
+It costs a fork per configuration — a few hundred microseconds against a 20 ms run — and buys
+per-job attribution ("crashed on `norcs` in velocity mode", not "crashed") and a *stronger*
+determinism check, since the two runs being compared live in two different address spaces.
+
+### Say what the sandbox is, and what it is not
+
+`setrlimit` plus a kill timer is **hardening against buggy and casually hostile code**, not a
+security boundary against a determined attacker. Arbitrary native code execution is precisely what a
+`.so` submission *is*, and the only real answers to that are a container, a VM, or a seccomp policy
+far stricter than anything here. There is no filesystem confinement and no syscall filtering; the
+network namespace is best-effort and is skipped where the kernel does not permit it. The server
+refuses to run as root, because every limit it applies is one root can lift.
+
+That is stated in the header of [`src/server/Sandbox.cpp`](src/server/Sandbox.cpp), in
+`SUBMISSIONS.md`, and on the server's own startup banner. Implying safety that is not there is worse
+than having none.
+
+### Failure is a result, never an error
+
+Every way a submission can be wrong gets a row with a reason and does not stop the other twenty-three
+configurations from running: won't compile, isn't an ELF object, missing `rf_resolve`, wrong
+`rf_abi_version`, `rf_init` declines, segfault, infinite loop, endless output, an exception that
+escaped. NaN and ±inf are replaced with zero — not clamped to the range limit, which would turn
+"computed nonsense" into "commanded hard over", a command the submission never meant and one that
+would score.
+
+The two limits catch different things and both are needed. A busy-spinning submission burns CPU and
+dies to `RLIMIT_CPU` at about 5 s; one that merely *blocks* consumes no CPU and no memory and sails
+past every rlimit there is, and only the parent's wall clock ends it, at 10.00 s. Both are measured
+in [`tests/test_submission.cpp`](tests/test_submission.cpp) rather than asserted here.
+
+### Determinism is enforced, not requested
+
+The host re-runs the first seed of every `(rocket, mode)` pair in a second process and compares the
+state hash the benchmark already emits. A submission that disagrees with itself is flagged
+`nondeterministic`, published with its numbers so the submitter can see them, and **never ranked** —
+one entry that will not happen the same way twice makes every comparison on the board meaningless,
+including its own.
+
+### Scoring is a policy file, not a constant
+
+`weights.json` is created on first start and never overwritten. Because every per-run component is
+archived, re-weighting the board is a re-read of stored results rather than a re-run of anything,
+and the weights are published on every leaderboard response so anyone can recompute the ranking
+themselves. They are a guess made before any real submission existed and are meant to be overruled.
+
 ## Determinism
 
 Target: **same machine, same binary, bit-exact.** Enough for replays, regression tests, ranking
@@ -662,6 +826,8 @@ cmake --build build -j
 ./build/rocketfight            # windowed, human controller
 ./build/rocketfight_eval       # headless batch, no window
 ./build/rocketfight_bench      # headless fly-by-wire benchmark, JSON on stdout
+./build/rocketfight_runner     # one benchmark job, one process -- what the server forks
+./build/rocketfight_server     # the submission server; see SUBMISSIONS.md
 ctest --test-dir build
 ```
 
@@ -682,7 +848,10 @@ sudo dnf install libX11-devel libXrandr-devel libXcursor-devel libXi-devel \
 ```
 
 Audio and networking modules are disabled, so OpenAL is not needed. **nlohmann/json** is fetched
-the same way, for the rocket definitions.
+the same way, for the rocket definitions, and **cpp-httplib** for the submission server -- header
+only, with OpenSSL, zlib and Brotli all switched off, since the server offers one JSON endpoint and
+one static page and every optional feature is another thing to build on a machine that only wanted
+to rank rockets.
 
 Rockets are looked for in `$ROCKETFIGHT_ROCKETS`, then `./rockets`, then the source directory
 configured at build time — so the binaries run from anywhere in the tree with no install step, and
@@ -702,7 +871,8 @@ cheap to add once the plumbing underneath them is right, and expensive to retrof
       cannot spiral
 - [x] `render`: resizable window, follow-camera with zoom, rocket + thrust plume, boundary circle,
       a static star grid — in empty space with no reference points, motion is otherwise invisible —
-      and a per-thruster actuator panel showing demand against reality
+      a per-thruster actuator panel showing demand against reality, and velocity / net thrust /
+      commanded vectors on the hull saying the same thing in the pilot's own units
 - [x] `control`: all three layers — `IntentSource`/`FlyByWire`/`Controller`, `LayeredController`,
       a `HumanIntentSource` (keyboard → `Intent`), a `RocketFlyByWire` (PD attitude hold + throttle
       law), a `DirectHumanController` for raw manual flight, a trivial scripted end-to-end
@@ -710,14 +880,21 @@ cheap to add once the plumbing underneath them is right, and expensive to retrof
 - [x] `eval`: episode runner + parallel `runBatch` over N worlds, reporting ticks/s and hashes, plus
       a deterministic fly-by-wire benchmark (`rocketfight_bench`) reporting tracking error, settling
       time, impulse and attitude wander as JSON
+- [x] `server`: a submission service — a plain C ABI (`include/rocketfight/flybywire_abi.h`), a
+      `dlopen` adapter, a fork/rlimit/wall-clock-SIGKILL sandbox, an in-sandbox compiler for C and
+      C++ source, one supervised process per `(rocket, mode, seed)` job, a cross-process determinism
+      gate, and a persisted leaderboard with data-driven weights. Contract in
+      [`SUBMISSIONS.md`](SUBMISSIONS.md)
 - [x] `tests`: determinism (double-run hash equality), integrator accuracy against a closed-form
       circular orbit, `StateChannel`/`CommandQueue` correctness under real thread contention,
       torque from off-centre force, out-of-bounds termination, a fly-by-wire convergence test
       (commanded acceleration is achieved within a tolerance, and heading settles without
       oscillating), thruster-name parsing and defaulting, changing vehicle across the command queue
-      on a live simulation thread, and the benchmark's own reproducibility — same seed giving a
+      on a live simulation thread, the benchmark's own reproducibility — same seed giving a
       bit-identical command sequence and state hash, different seeds giving different ones, and the
-      sequence being provably independent of the vehicle
+      sequence being provably independent of the vehicle — and the submission boundary's failure
+      paths: every way a library can fail to load, a wall-clock kill of a child that blocks, an
+      rlimit kill of one that spins, a segfault, an output flood, and environment scrubbing
 
 Deferred by design: collisions, projectiles, fuel, metrics and scoring, learned controllers,
 multiple rockets, render interpolation.
@@ -793,12 +970,15 @@ Measured on a 20-core machine:
 - **Headless:** 92 M ticks/s across the pool, ~92,000x real time, sweeping every controller
   against every rocket in both worlds, with identical jobs producing identical state hashes.
 - **Benchmark:** a 60 s run per vehicle in about 20 ms single-threaded, byte-identical across runs.
-- **Tests:** 79 cases, 16918 assertions, all passing.
+- **Submission server:** a full evaluation — 4 rockets x 2 modes x 3 seeds, plus 8 cross-process
+  determinism repeats — in about 0.5 s wall for a well-behaved submission. HTTP stayed at 200 in
+  ~0.9 ms throughout a run in which one submission hung on all 24 of its jobs.
+- **Tests:** 95 cases, 17012 assertions, all passing.
 
 Physics, determinism and data-loading are asserted tightly. The closed-loop flying checks are
 deliberately loose — they exist to catch "this vehicle cannot be flown at all", not to pin a set of
 gains that is expected to be optimised against metrics later.
 
-Next up: brute-force optimisation of the fly-by-wire against `rocketfight_bench`, the submission
-server that drives it, and then whatever else you want to experiment with — collisions, projectiles,
-learned controllers.
+Next up: real submissions to retune the weights against, brute-force optimisation of the fly-by-wire
+against `rocketfight_bench`, and then whatever else you want to experiment with — collisions,
+projectiles, learned controllers.

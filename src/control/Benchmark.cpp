@@ -222,6 +222,18 @@ void BenchmarkHarness::reset(const WorldConfig& env) {
     monitor_.reset(spec_, cfg_);
 }
 
+void BenchmarkHarness::reset(const WorldConfig& env, std::unique_ptr<FlyByWire> fbw) {
+    // The two-argument LayeredController constructor, which turns off the
+    // auto-selection the interactive path relies on -- otherwise the reset
+    // below would immediately discard the submission and refit the built-in
+    // fly-by-wire, and the server would spend its afternoon ranking one
+    // controller against itself.
+    auto source = std::make_unique<BenchmarkIntentSource>(cfg_, seed_);
+    source_     = source.get();
+    controller_ = std::make_unique<LayeredController>(std::move(source), std::move(fbw));
+    reset(env);
+}
+
 void BenchmarkHarness::setMode(Intent::Mode m) {
     if (m == cfg_.mode) return;
     cfg_.mode = m;

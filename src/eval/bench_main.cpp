@@ -1,32 +1,26 @@
-#include <nlohmann/json.hpp>
-
 #include <cstdint>
 #include <cstdlib>
-#include <iomanip>
 #include <iostream>
-#include <sstream>
 #include <string>
 #include <vector>
 
 #include "data/RocketCatalogue.hpp"
+#include "eval/BenchmarkJson.hpp"
 #include "eval/BenchmarkRunner.hpp"
 
 // ---------------------------------------------------------------------------
 // The headless benchmark: no window, no pacing, JSON on stdout.
 //
-// This is the binary a submission server drives. Everything it prints is
-// machine-readable, every run carries the seed and the state hash that make it
-// reproducible, and the metrics are published as components with the score
-// weights beside them -- so a ranking can be recomputed from an archive of
-// results without re-running anything.
+// This is the binary a person points at the built-in fly-by-wire. The
+// submission server drives rocketfight_runner instead, which runs one job per
+// process under a wall-clock kill -- but both emit the same per-run object,
+// from eval/BenchmarkJson.cpp, so a result archived from either is readable by
+// the same tooling.
 // ---------------------------------------------------------------------------
 
 namespace {
 
-// ordered_json, not json: the default keeps keys in a std::map, which sorts them
-// and puts "runs" in the middle of the header. Parsers do not care, but a human
-// checking a submission by eye does, and it costs nothing.
-using Json = nlohmann::ordered_json;
+using Json = rf::BenchJson;
 
 struct Options {
     std::string   rocket;
@@ -74,42 +68,14 @@ Options parseOptions(int argc, char** argv) {
         o.ok    = false;
         o.error = "--seconds must be positive";
     }
+    if (o.seconds > rf::kMaxBenchmarkSeconds) {
+        o.ok    = false;
+        o.error = "--seconds must be at most " +
+                  std::to_string(static_cast<int>(rf::kMaxBenchmarkSeconds)) +
+                  ": past roughly 450 s vehicles drift outside the world bound, which the "
+                  "benchmark deliberately does not check";
+    }
     return o;
-}
-
-// uint64 as a hex string, not a JSON number: JSON's number type is a double
-// almost everywhere it is parsed, and a 64-bit hash does not survive that.
-std::string hex64(std::uint64_t v) {
-    std::ostringstream os;
-    os << "0x" << std::hex << std::setw(16) << std::setfill('0') << v;
-    return os.str();
-}
-
-Json toJson(const rf::BenchmarkRun& r, const rf::ScoreWeights& weights) {
-    const rf::BenchmarkMetrics& m = r.metrics;
-    return Json{
-        {"rocket", r.rocket},
-        {"mode", rf::intentModeName(r.mode)},
-        {"seed", r.seed},
-        {"ticks", r.ticks},
-        {"seconds", m.seconds},
-        {"state_hash", hex64(r.stateHash)},
-        {"metrics",
-         Json{
-             {"tracking_error_integral", m.trackingErrorIntegral},
-             {"tracking_error_mean", m.trackingErrorMean},
-             {"settling_time_mean_s", m.settlingMean},
-             {"settling_time_worst_s", m.settlingWorst},
-             {"settled_fraction", m.settledFraction()},
-             {"steps", m.steps},
-             {"steps_settled", m.stepsSettled},
-             {"impulse_ns", m.impulse},
-             {"mean_thrust_n", m.meanThrust()},
-             {"attitude_wander_rad", m.attitudeWander},
-             {"mean_ang_rate_rad_s", m.meanAngRate()},
-         }},
-        {"score", rf::compositeScore(m, weights)},
-    };
 }
 
 int fail(const std::string& message) {
@@ -155,7 +121,7 @@ int main(int argc, char** argv) {
         spec.seed     = opts.seed;
         spec.maxTicks = static_cast<std::uint32_t>(opts.seconds * rf::kTickRate);
 
-        runs.push_back(toJson(rf::runBenchmark(spec), weights));
+        runs.push_back(rf::toJson(rf::runBenchmark(spec), weights));
     }
 
     const Json out{
@@ -165,27 +131,10 @@ int main(int argc, char** argv) {
         // every measured acceleration, and the score would be partly a score
         // for orbital mechanics.
         {"world", "zero-g"},
-        {"config",
-         Json{
-             {"mode", rf::intentModeName(config.mode)},
-             {"seed", opts.seed},
-             {"seconds", opts.seconds},
-             {"hold_seconds", {config.holdMinSeconds, config.holdMaxSeconds}},
-             {"accel_fraction_of_max", {config.accelMin, config.accelMax}},
-             {"velocity_max_mps", config.speedMax},
-             {"accel_settle_fraction", config.accelSettleFraction},
-             {"velocity_settle_tolerance_mps", config.velocitySettleTolerance},
-             {"control_hz", rf::kTickRate / rf::Real(rf::kControlEvery)},
-         }},
+        {"config", rf::toJson(config, opts.seed, opts.seconds)},
         // Shipped with the results, because these are a guess. Anything ranking
         // an archive can re-weight the components without re-running a run.
-        {"score_weights",
-         Json{
-             {"tracking", weights.tracking},
-             {"settling", weights.settling},
-             {"impulse", weights.impulse},
-             {"wander", weights.wander},
-         }},
+        {"score_weights", rf::toJson(weights)},
         {"runs", runs},
     };
 

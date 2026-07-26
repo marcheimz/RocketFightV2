@@ -1,0 +1,8 @@
+{
+  "name": "hostile-spin",
+  "description": "Deliberately hostile: rf_resolve never returns. Submitted to prove the supervisor kills a hung job, records it as a failed run, and leaves the server standing. Scores the failure penalty on every configuration by construction.",
+  "author": "rocketfight",
+  "language": "c",
+  "abi_version": 1,
+  "entry": "flybywire.c"
+}

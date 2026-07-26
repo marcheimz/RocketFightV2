@@ -50,6 +50,38 @@ void addLine(sf::VertexArray& va, sf::Vector2f a, sf::Vector2f b, sf::Color c) {
     va.append(sf::Vertex{b, c});
 }
 
+// A demand, in the same hue as the reality it is meant to be compared against.
+// The panel already established that demand is a ghost and reality is filled;
+// a line cannot be outlined, so here the ghost is a dash pattern. Giving it a
+// third colour instead would read as a third quantity rather than as the same
+// quantity asked for.
+//
+// `dash` arrives in world units computed from metres-per-pixel, so the pattern
+// is the same size on screen at every zoom -- a dash defined in metres would
+// turn into a solid line the moment the camera pulled back.
+void addDashedLine(sf::VertexArray& va, sf::Vector2f a, sf::Vector2f b, sf::Color c, float dash) {
+    const sf::Vector2f delta = b - a;
+    const float        total = std::sqrt(delta.x * delta.x + delta.y * delta.y);
+    if (total <= 0.f || dash <= 0.f) return;
+
+    const sf::Vector2f unit = delta / total;
+    for (float t = 0.f; t < total; t += dash * 2.f) {
+        addLine(va, a + unit * t, a + unit * std::min(t + dash, total), c);
+    }
+}
+
+// A cap across the tip of a demand vector. The dashes lie on top of the solid
+// line whenever the vehicle is tracking well -- which is the good case and must
+// still be readable -- so the endpoint gets a mark of its own.
+void addTipCap(sf::VertexArray& va, sf::Vector2f a, sf::Vector2f b, sf::Color c, float half) {
+    const sf::Vector2f delta = b - a;
+    const float        total = std::sqrt(delta.x * delta.x + delta.y * delta.y);
+    if (total <= 0.f) return;
+
+    const sf::Vector2f n{-delta.y / total * half, delta.x / total * half};
+    addLine(va, b - n, b + n, c);
+}
+
 // Grid spacing on a 1-2-5 ladder, chosen so roughly eight divisions are visible
 // at any zoom. Without a reference grid, motion through empty space is close to
 // invisible: nothing on screen changes as the ship drifts.
@@ -223,7 +255,8 @@ void Renderer::drawRocket(sf::RenderWindow& window, const RocketView& r, const C
     window.draw(hull_);
 }
 
-void Renderer::drawVectors(sf::RenderWindow& window, const RocketView& r, const Camera& camera) {
+void Renderer::drawVectors(sf::RenderWindow& window, const RocketView& r, const Camera& camera,
+                           const CommandView& command) {
     lines_.clear();
     const Real scale = visualScale(r, camera);
 
@@ -232,6 +265,14 @@ void Renderer::drawVectors(sf::RenderWindow& window, const RocketView& r, const 
     // scale as the hull, or it would vanish at the zoom levels where the hull
     // needed help in the first place.
     addLine(lines_, toView(r.pos), toView(r.pos + r.vel * scale), kVelocity);
+
+    // Both acceleration vectors -- the one asked for and the one arriving -- go
+    // through this. Sharing the mapping is the whole reason the pair is worth
+    // drawing: two arrows on different scales would only say "some" and "some".
+    const auto accelLength = [&](Real accel) {
+        return r.spec.length * scale * Real(2) *
+               clamp(accel / std::max(r.spec.maxForwardAccel(), Real(1e-6)), Real(0), Real(1));
+    };
 
     // Net thrust: the vector sum of every firing nozzle, in world space. On a
     // symmetric attitude burn this is correctly zero -- the ship is rotating,
@@ -245,10 +286,47 @@ void Renderer::drawVectors(sf::RenderWindow& window, const RocketView& r, const 
     const Real netAccel = length(net) / r.spec.mass;
     if (netAccel > Real(0.01)) {
         const Vec2 dir = normalizedOr(net, Vec2{});
-        const Real len = r.spec.length * scale * Real(2) *
-                         clamp(netAccel / std::max(r.spec.maxForwardAccel(), Real(1e-6)),
-                               Real(0), Real(1));
-        addLine(lines_, toView(r.pos), toView(r.pos + dir * len), kThrust);
+        addLine(lines_, toView(r.pos), toView(r.pos + dir * accelLength(netAccel)), kThrust);
+    }
+
+    // ...and what was commanded, drawn last so it survives the lines it is being
+    // compared with. Only the one that matches the mode: the two carry different
+    // units, and showing both would invite reading a length in one as a length
+    // in the other.
+    //
+    // Nothing at all when the controller has no Intent to report. Direct manual
+    // flight is not a mode with a zero command in it; it is a mode with no
+    // command, and an arrow of length zero would be a claim rather than silence.
+    if (command.valid) {
+        const auto dash = static_cast<float>(camera.metersPerPixel() * Real(7));
+        const auto cap  = static_cast<float>(camera.metersPerPixel() * Real(4));
+
+        // Below a few pixels there is no direction to read, only a smudge on the
+        // hull -- which is where a commanded stop (target velocity zero) sits,
+        // and the solid velocity line running away from it already says that.
+        const Real floorLen = camera.metersPerPixel() * Real(4);
+
+        Vec2      end{};
+        sf::Color hue = kVelocity;
+
+        if (command.intent.mode == Intent::Mode::Velocity) {
+            // The same "where you will be in one second" convention as the
+            // actual velocity, so the gap between the two lines is the tracking
+            // error in metres per second, read straight off the screen.
+            end = r.pos + command.intent.vector * scale;
+        } else {
+            // Intent::vector is normalised as a fraction of the vehicle's
+            // maximum, so this is the demanded acceleration in m/s^2 -- and it
+            // goes through the same mapping the achieved one just did.
+            const Vec2 want = command.intent.vector * r.spec.maxForwardAccel();
+            end = r.pos + normalizedOr(want, Vec2{}) * accelLength(length(want));
+            hue = kThrust;
+        }
+
+        if (length(end - r.pos) > floorLen) {
+            addDashedLine(lines_, toView(r.pos), toView(end), hue, dash);
+            addTipCap(lines_, toView(r.pos), toView(end), hue, cap);
+        }
     }
 
     window.draw(lines_);
@@ -582,9 +660,13 @@ void Renderer::draw(sf::RenderWindow& window, const Snapshot& snap, const Camera
     drawBounds(window, snap);
     drawAttractors(window, snap);
 
-    for (const RocketView& r : snap.rockets) {
-        drawVectors(window, r, camera);
-        drawRocket(window, r, camera);
+    // The command belongs to the controlled rocket alone. Anything else in the
+    // world is flying itself and has none to show here.
+    static constexpr CommandView kNoCommand{};
+
+    for (std::size_t i = 0; i < snap.rockets.size(); ++i) {
+        drawVectors(window, snap.rockets[i], camera, i == 0 ? snap.command : kNoCommand);
+        drawRocket(window, snap.rockets[i], camera);
     }
 
     // Everything from here is measured in pixels, not metres.

@@ -1,0 +1,16 @@
+#pragma once
+
+namespace rf {
+
+// Where CMake put the ABI failure-path fixtures. Configured rather than
+// discovered: a test that hunts for its own fixtures relative to the working
+// directory passes or fails depending on where ctest was invoked from, which is
+// the least useful kind of flake there is.
+inline constexpr const char* kFixtureDir = "@RF_FIXTURE_DIR@";
+
+// The runner binary and one working example, for the tests that exercise the
+// real supervised path rather than an in-process load.
+inline constexpr const char* kTestRunnerPath = "@ROCKETFIGHT_RUNNER_PATH@";
+inline constexpr const char* kTestRocketDir  = "@ROCKETFIGHT_ROCKET_DIR@";
+
+}  // namespace rf
