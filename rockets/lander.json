@@ -1,0 +1,64 @@
+{
+  // Squat, with real side-thrusting authority. It does not need to point its
+  // nose where it is going, and the fly-by-wire discovers that from the layout
+  // rather than being told: lateral capability above a fifth of forward
+  // capability is enough to stop insisting the nose leads.
+  //
+  // The side thrusters are strong and quick, which makes this the forgiving
+  // vehicle of the set.
+  "name": "lander",
+  "mass": 1400.0,
+  "length": 8.0,
+  "width": 6.0,
+
+  "thrusters": [
+    {
+      "at": [-1.0, 0.0],
+      "direction_deg": 0.0,
+      "max_thrust": 30000.0,
+      "min_thrust": 7500.0,
+      "ignition_time": 0.15,
+      "ramp_up": 150000.0,
+      "ramp_down": 200000.0,
+      "gimbal_deg": 6.0,
+      "gimbal_rate_deg": 60.0
+    },
+
+    {
+      "at": [0.8, 0.0],
+      "direction_deg": 90.0,
+      "max_thrust": 6000.0,
+      "min_thrust": 1200.0,
+      "ignition_time": 0.03,
+      "ramp_up": 60000.0,
+      "ramp_down": 90000.0
+    },
+    {
+      "at": [0.8, 0.0],
+      "direction_deg": -90.0,
+      "max_thrust": 6000.0,
+      "min_thrust": 1200.0,
+      "ignition_time": 0.03,
+      "ramp_up": 60000.0,
+      "ramp_down": 90000.0
+    },
+    {
+      "at": [-0.8, 0.0],
+      "direction_deg": 90.0,
+      "max_thrust": 6000.0,
+      "min_thrust": 1200.0,
+      "ignition_time": 0.03,
+      "ramp_up": 60000.0,
+      "ramp_down": 90000.0
+    },
+    {
+      "at": [-0.8, 0.0],
+      "direction_deg": -90.0,
+      "max_thrust": 6000.0,
+      "min_thrust": 1200.0,
+      "ignition_time": 0.03,
+      "ramp_up": 60000.0,
+      "ramp_down": 90000.0
+    }
+  ]
+}

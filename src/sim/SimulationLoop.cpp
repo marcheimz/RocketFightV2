@@ -31,8 +31,10 @@ constexpr Nanos kSpinMargin{150'000};  // 150 us
 
 SimulationLoop::SimulationLoop(WorldConfig cfg, StateChannel& state, CommandQueue& commands)
     : world_(std::move(cfg)), state_(&state), commands_(&commands) {
-    layered_ = std::make_unique<LayeredController>(std::make_unique<GamepadIntentSource>(input_),
-                                                   std::make_unique<RocketFlyByWire>());
+    // No vehicle named here either: the fly-by-wire is built from the world's
+    // rocket at reset, so changing the vehicle changes how it flies without
+    // touching the loop.
+    layered_ = std::make_unique<LayeredController>(std::make_unique<GamepadIntentSource>(input_));
     direct_  = std::make_unique<DirectHumanController>(input_);
 
     layered_->reset(world_.config().seed, world_.config());

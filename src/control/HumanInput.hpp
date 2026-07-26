@@ -43,16 +43,22 @@ private:
 // ---------------------------------------------------------------------------
 // Layer 3, human. Raw actuator control with the fly-by-wire bypassed: the
 // debugging path, and the "fly it yourself" path. Not the default.
+//
+// It still has to know the layout, because "turn left" means firing whichever
+// thrusters happen to produce a positive torque on *this* vehicle. What makes it
+// direct is that there is no closed loop and no allocation: the stick opens
+// thruster groups, and whatever the ship then does is the pilot's problem.
 // ---------------------------------------------------------------------------
 class DirectHumanController final : public Controller {
 public:
     explicit DirectHumanController(const InputState& state) : state_(&state) {}
 
     ControlInput evaluate(const Observation& obs) override;
-    void         reset(std::uint64_t, const WorldConfig&) override {}
+    void         reset(std::uint64_t, const WorldConfig& env) override;
 
 private:
     const InputState* state_;
+    RocketSpec        spec_{};
 };
 
 }  // namespace rf

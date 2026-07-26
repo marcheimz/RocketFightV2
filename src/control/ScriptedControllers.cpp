@@ -5,11 +5,24 @@
 
 namespace rf {
 
-ControlInput SpinBurnController::evaluate(const Observation&) {
-    ControlInput out;
-    out.throttle = throttle_;
-    out.rcs      = rcs_;
-    return out;
+void SpinBurnController::reset(std::uint64_t, const WorldConfig& env) {
+    command_ = ControlInput{};
+
+    if (env.rockets.empty()) return;
+    const RocketSpec& spec = env.rockets.front().spec;
+
+    for (std::size_t i = 0; i < spec.count(); ++i) {
+        const Thruster& t       = spec[i];
+        const Real      forward = dot(t.unitDirection(), Vec2{Real(1), Real(0)});
+
+        if (forward > Real(0.7)) {
+            command_.level[i] = throttle_;
+        } else if (t.leverArm() > Real(0)) {
+            // Only the thrusters that push it one way round, so it really does
+            // spin rather than sitting in a balanced stall.
+            command_.level[i] = spin_;
+        }
+    }
 }
 
 Intent SeekPointIntentSource::intent(const Observation& obs) {

@@ -1,0 +1,28 @@
+{
+  // No attitude thrusters at all. The only way this vehicle can rotate is by
+  // deflecting a lit engine, so it has to burn in order to turn -- and the
+  // nozzle slews slowly enough that the fly-by-wire has to lead its corrections.
+  //
+  // A deliberately awkward airframe, and the sharpest test that nothing in the
+  // control stack quietly assumes RCS exists.
+  "name": "norcs",
+  "mass": 900.0,
+  "length": 11.0,
+  "width": 2.6,
+
+  "thrusters": [
+    {
+      "at": [-1.0, 0.0],
+      "direction_deg": 0.0,
+      "max_thrust": 38000.0,
+      "min_thrust": 9500.0,
+      "ignition_time": 0.35,
+      "ramp_up": 90000.0,
+      "ramp_down": 160000.0,
+      // A much wider gimbal to compensate for having nothing else, but a slow
+      // one: authority is not the same as responsiveness.
+      "gimbal_deg": 20.0,
+      "gimbal_rate_deg": 25.0
+    }
+  ]
+}

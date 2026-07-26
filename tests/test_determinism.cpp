@@ -4,18 +4,20 @@
 #include <vector>
 
 #include "control/Registry.hpp"
+#include "TestRockets.hpp"
 #include "core/World.hpp"
 #include "eval/BatchRunner.hpp"
 #include "eval/EpisodeRunner.hpp"
 
 using namespace rf;
+using rf::testing::classic;
 
 namespace {
 
 Scenario orbitScenario(std::uint32_t ticks = 20'000) {
     Scenario s;
     s.name     = "orbit";
-    s.world    = orbitWorld();
+    s.world    = orbitWorld(classic());
     s.seed     = 4242;
     s.maxTicks = ticks;
     return s;
@@ -68,7 +70,7 @@ TEST_CASE("running in parallel gives the same answers as running alone") {
 }
 
 TEST_CASE("a world reset returns to the exact starting state") {
-    World world(orbitWorld());
+    World world(orbitWorld(classic()));
     const std::uint64_t initial = world.hash();
 
     for (int i = 0; i < 5'000; ++i) world.step(kTickDt);
@@ -81,8 +83,8 @@ TEST_CASE("a world reset returns to the exact starting state") {
 TEST_CASE("the hash actually notices a divergence") {
     // A hash that never changes would make every determinism test above pass
     // vacuously, so check that it is sensitive to a one-tick difference.
-    World a(orbitWorld());
-    World b(orbitWorld());
+    World a(orbitWorld(classic()));
+    World b(orbitWorld(classic()));
 
     for (int i = 0; i < 100; ++i) a.step(kTickDt);
     for (int i = 0; i < 101; ++i) b.step(kTickDt);

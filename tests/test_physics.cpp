@@ -2,13 +2,30 @@
 
 #include <cmath>
 
+#include "TestRockets.hpp"
 #include "core/World.hpp"
 
 using namespace rf;
+using rf::testing::classic;
 
 namespace {
 
-World makeWorld(WorldConfig cfg) { return World(std::move(cfg)); }
+// Thruster indices for the classic layout: main engine, then the attitude quad
+// as nose-left, nose-right, tail-left, tail-right.
+constexpr std::size_t kMain     = 0;
+constexpr std::size_t kNosePlus = 1;
+constexpr std::size_t kTailMinus = 4;
+
+ControlInput fire(std::initializer_list<std::size_t> thrusters, Real level = Real(1)) {
+    ControlInput in;
+    for (std::size_t i : thrusters) in.level[i] = level;
+    return in;
+}
+
+void run(World& world, const ControlInput& in, int ticks) {
+    world.setControl(0, in);
+    for (int i = 0; i < ticks; ++i) world.step(kTickDt);
+}
 
 }  // namespace
 
@@ -37,48 +54,60 @@ TEST_CASE("a force through the centre of mass produces no torque") {
     }
 }
 
-TEST_CASE("gimballed thrust rotates the rocket, axial thrust does not") {
-    World world = makeWorld(defaultWorld());
+TEST_CASE("the main engine pushes without turning") {
+    World world(defaultWorld(classic()));
+    run(world, fire({kMain}), 3000);
 
-    ControlInput straight;
-    straight.throttle = 1.0;
-    world.setControl(0, straight);
-    for (int i = 0; i < 1000; ++i) world.step(kTickDt);
+    CHECK(world.rockets()[0].body().angVel == doctest::Approx(0.0));
 
-    CHECK(world.rockets()[0].body.angVel == doctest::Approx(0.0));
-    // One second at 40 m/s^2, nose up.
-    CHECK(world.rockets()[0].body.vel.y == doctest::Approx(40.0).epsilon(0.001));
+    // Measure the steady acceleration once the engine has lit and ramped, rather
+    // than assuming thrust appeared the instant it was commanded.
+    const Real before = world.rockets()[0].body().vel.y;
+    for (int i = 0; i < 500; ++i) world.step(kTickDt);
+    const Real accel = (world.rockets()[0].body().vel.y - before) / Real(0.5);
 
-    World deflected = makeWorld(defaultWorld());
-    ControlInput gimballed;
-    gimballed.throttle = 1.0;
-    gimballed.gimbal   = 1.0;
-    deflected.setControl(0, gimballed);
-    for (int i = 0; i < 1000; ++i) deflected.step(kTickDt);
-
-    // Positive deflection swings the tail, so the body rotates clockwise.
-    CHECK(deflected.rockets()[0].body.angVel < Real(-0.1));
+    CHECK(accel == doctest::Approx(classic().maxForwardAccel()).epsilon(0.001));
 }
 
-TEST_CASE("attitude thrusters apply torque without net force") {
-    World world = makeWorld(defaultWorld());
+TEST_CASE("a deflected nozzle turns the rocket") {
+    World world(defaultWorld(classic()));
+    ControlInput in = fire({kMain});
+    in.gimbal[kMain] = Real(1);
+    run(world, in, 3000);
 
-    ControlInput spin;
-    spin.rcs = 1.0;
-    world.setControl(0, spin);
-    for (int i = 0; i < 1000; ++i) world.step(kTickDt);
+    // Positive deflection swings the tail, so the body rotates clockwise.
+    CHECK(world.rockets()[0].body().angVel < Real(-0.1));
+}
 
-    const Body& b = world.rockets()[0].body;
+TEST_CASE("opposed attitude thrusters rotate without translating") {
+    // This is the property the old hardcoded 'rcs is a pure torque' field was
+    // asserting. Here nothing asserts it: the forces cancel because of where the
+    // thrusters are, and the torques add for the same reason.
+    World world(defaultWorld(classic()));
+    run(world, fire({kNosePlus, kTailMinus}), 2000);
+
+    const Body& b = world.rockets()[0].body();
     CHECK(b.angVel > Real(1.0));
     CHECK(length(b.vel) == doctest::Approx(0.0));
     CHECK(length(b.pos) == doctest::Approx(0.0));
 }
 
+TEST_CASE("a single attitude thruster both turns and shoves") {
+    // The flip side: fire only one and the vehicle translates too. Nothing in
+    // the model prevents it, which is what makes asymmetric layouts meaningful.
+    World world(defaultWorld(classic()));
+    run(world, fire({kNosePlus}), 2000);
+
+    const Body& b = world.rockets()[0].body();
+    CHECK(b.angVel > Real(0.5));
+    CHECK(length(b.vel) > Real(1.0));
+}
+
 TEST_CASE("zero-g means exactly zero drift") {
-    World world = makeWorld(defaultWorld());
+    World world(defaultWorld(classic()));
     for (int i = 0; i < 10'000; ++i) world.step(kTickDt);
 
-    const Body& b = world.rockets()[0].body;
+    const Body& b = world.rockets()[0].body();
     CHECK(b.pos.x == Real(0));
     CHECK(b.pos.y == Real(0));
     CHECK(b.vel.x == Real(0));
@@ -89,11 +118,11 @@ TEST_CASE("a circular orbit stays circular") {
     // The integrator's real test. Semi-implicit Euler is symplectic, so orbital
     // radius should wobble by a bounded amount and come back -- unlike explicit
     // Euler, which spirals outwards without limit.
-    const WorldConfig cfg = orbitWorld();
-    World world = makeWorld(cfg);
+    const WorldConfig cfg = orbitWorld(classic());
+    World world(cfg);
 
-    const Real r0 = length(world.rockets()[0].body.pos);
-    const Real mu = cfg.attractors.front().mu;
+    const Real r0     = length(world.rockets()[0].body().pos);
+    const Real mu     = cfg.attractors.front().mu;
     const Real period = Real(2) * kPi * std::sqrt(r0 * r0 * r0 / mu);
 
     const auto ticks = static_cast<int>(period / kTickDt);
@@ -102,7 +131,7 @@ TEST_CASE("a circular orbit stays circular") {
     Real maxR = r0;
     for (int i = 0; i < ticks; ++i) {
         world.step(kTickDt);
-        const Real r = length(world.rockets()[0].body.pos);
+        const Real r = length(world.rockets()[0].body().pos);
         minR = std::min(minR, r);
         maxR = std::max(maxR, r);
     }
@@ -112,16 +141,16 @@ TEST_CASE("a circular orbit stays circular") {
 
     // And it comes back to where it started, rather than merely staying at the
     // right distance.
-    const Real closingError = length(world.rockets()[0].body.pos - cfg.rockets.front().pos);
+    const Real closingError = length(world.rockets()[0].body().pos - cfg.rockets.front().pos);
     CHECK(closingError / r0 < Real(0.01));
 }
 
 TEST_CASE("out of bounds is detected at the configured radius") {
-    WorldConfig cfg = defaultWorld();
+    WorldConfig cfg = defaultWorld(classic());
     cfg.boundsRadius = Real(1000);
     cfg.rockets.front().vel = {Real(500), Real(0)};
 
-    World world = makeWorld(cfg);
+    World world(cfg);
     CHECK_FALSE(world.anyOutOfBounds());
 
     for (int i = 0; i < 3000; ++i) world.step(kTickDt);  // 3 s at 500 m/s

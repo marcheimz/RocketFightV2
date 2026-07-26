@@ -1,5 +1,8 @@
 #include "control/HumanInput.hpp"
 
+#include <algorithm>
+#include <cmath>
+
 namespace rf {
 
 namespace {
@@ -54,15 +57,38 @@ Intent GamepadIntentSource::intent(const Observation&) {
     return out;
 }
 
+void DirectHumanController::reset(std::uint64_t, const WorldConfig& env) {
+    if (!env.rockets.empty()) spec_ = env.rockets.front().spec;
+}
+
 ControlInput DirectHumanController::evaluate(const Observation&) {
     ControlInput out;
-    out.throttle = clamp(state_->axis(InputAxis::TriggerR), Real(0), Real(1));
 
+    const Real throttle = clamp(state_->axis(InputAxis::TriggerR), Real(0), Real(1));
     // Stick right should swing the nose right. Right is clockwise, and clockwise
     // is a negative angular rate in a y-up world.
-    out.rcs    = -clamp(state_->axis(InputAxis::MoveX), Real(-1), Real(1));
-    out.gimbal = clamp(state_->axis(InputAxis::AimX), Real(-1), Real(1));
-    out.fire   = state_->button(InputButton::Fire);
+    const Real turn   = -clamp(state_->axis(InputAxis::MoveX), Real(-1), Real(1));
+    const Real gimbal = clamp(state_->axis(InputAxis::AimX), Real(-1), Real(1));
+
+    for (std::size_t i = 0; i < spec_.count(); ++i) {
+        const Thruster& t       = spec_[i];
+        const Real      forward = dot(t.unitDirection(), Vec2{Real(1), Real(0)});
+
+        // Main engines answer the trigger.
+        if (forward > Real(0.7)) {
+            out.level[i] = throttle;
+        } else if (turn != Real(0) && sign(t.leverArm()) == sign(turn)) {
+            // Everything else is an attitude thruster: open the ones pushing the
+            // way the pilot asked. On a symmetric layout that is the opposed
+            // pair, so the ship rotates without translating -- not because
+            // anything balanced it, but because the geometry does.
+            out.level[i] = std::abs(turn);
+        }
+
+        if (t.maxGimbal > Real(0)) out.gimbal[i] = gimbal;
+    }
+
+    out.fire = state_->button(InputButton::Fire);
     return out;
 }
 

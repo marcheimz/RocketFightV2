@@ -1,0 +1,73 @@
+{
+  // The reference vehicle: one gimballed main engine at the tail, plus two
+  // opposed pairs of attitude thrusters at nose and tail.
+  //
+  // Firing diagonally opposite attitude thrusters gives a pure couple -- the
+  // forces cancel, the torques add. Nothing in the code arranges that; it falls
+  // out of where they are mounted.
+  //
+  // "at" is [along, across] as a fraction of half-length and half-width, so the
+  // layout survives resizing the hull. "direction_deg" is the direction of the
+  // force applied to the hull: 0 is forward, 90 is to the left.
+  "name": "classic",
+  "mass": 1000.0,
+  "length": 12.0,
+  "width": 3.0,
+
+  "thrusters": [
+    {
+      "at": [-1.0, 0.0],
+      "direction_deg": 0.0,
+      "max_thrust": 40000.0,
+      // Cannot be throttled below 30%: the allocator has to choose between a
+      // real burn and none at all, which is most of what makes flying this
+      // thing interesting.
+      "min_thrust": 12000.0,
+      "ignition_time": 0.25,
+      "ramp_up": 120000.0,
+      "ramp_down": 200000.0,
+      "gimbal_deg": 11.5,
+      "gimbal_rate_deg": 40.0
+    },
+
+    // Attitude quad. Fast to light and quick to ramp, because they exist to make
+    // small corrections -- but with a 30% floor they still cannot make an
+    // arbitrarily small one.
+    {
+      "at": [0.8333333333, 0.0],
+      "direction_deg": 90.0,
+      "max_thrust": 2500.0,
+      "min_thrust": 750.0,
+      "ignition_time": 0.02,
+      "ramp_up": 25000.0,
+      "ramp_down": 40000.0
+    },
+    {
+      "at": [0.8333333333, 0.0],
+      "direction_deg": -90.0,
+      "max_thrust": 2500.0,
+      "min_thrust": 750.0,
+      "ignition_time": 0.02,
+      "ramp_up": 25000.0,
+      "ramp_down": 40000.0
+    },
+    {
+      "at": [-0.8333333333, 0.0],
+      "direction_deg": 90.0,
+      "max_thrust": 2500.0,
+      "min_thrust": 750.0,
+      "ignition_time": 0.02,
+      "ramp_up": 25000.0,
+      "ramp_down": 40000.0
+    },
+    {
+      "at": [-0.8333333333, 0.0],
+      "direction_deg": -90.0,
+      "max_thrust": 2500.0,
+      "min_thrust": 750.0,
+      "ignition_time": 0.02,
+      "ramp_up": 25000.0,
+      "ramp_down": 40000.0
+    }
+  ]
+}

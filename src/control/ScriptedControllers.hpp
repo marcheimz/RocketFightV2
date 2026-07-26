@@ -15,18 +15,22 @@ public:
 
 // End-to-end: straight from Observation to actuators, no Intent anywhere. It
 // exists to prove the interface is not secretly shaped around a human pilot --
-// this one holds a fixed roll rate while burning, which no Intent could express.
+// this one holds an open-loop spin while burning, which no Intent could express.
 class SpinBurnController final : public Controller {
 public:
-    explicit SpinBurnController(Real throttle = Real(0.5), Real rcs = Real(0.25))
-        : throttle_(throttle), rcs_(rcs) {}
+    explicit SpinBurnController(Real throttle = Real(0.5), Real spin = Real(0.25))
+        : throttle_(throttle), spin_(spin) {}
 
-    ControlInput evaluate(const Observation&) override;
-    void         reset(std::uint64_t, const WorldConfig&) override {}
+    ControlInput evaluate(const Observation&) override { return command_; }
+
+    // The command depends on where this vehicle's thrusters are, so it is built
+    // once the world is known rather than assumed at construction.
+    void reset(std::uint64_t, const WorldConfig& env) override;
 
 private:
-    Real throttle_;
-    Real rcs_;
+    Real         throttle_;
+    Real         spin_;
+    ControlInput command_{};
 };
 
 // Intent-level policy: it says where it wants to go and lets the fly-by-wire

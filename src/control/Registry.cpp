@@ -9,9 +9,11 @@ namespace rf {
 
 namespace {
 
+// No fly-by-wire is named here. LayeredController picks the one matching
+// whatever vehicle the scenario contains, so every policy below flies every
+// rocket type without a single extra registry entry.
 std::unique_ptr<Controller> makeLayered(std::unique_ptr<IntentSource> source) {
-    return std::make_unique<LayeredController>(std::move(source),
-                                               std::make_unique<RocketFlyByWire>());
+    return std::make_unique<LayeredController>(std::move(source));
 }
 
 }  // namespace

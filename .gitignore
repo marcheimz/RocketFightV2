@@ -42,7 +42,9 @@ compile_commands.json
 callgrind.out.*
 perf.data
 perf.data.old
-core
+# Anchored to the repository root on purpose. An unanchored "core" matches at
+# any depth, which silently excludes src/core/ -- the entire physics core.
+/core
 core.[0-9]*
 vgcore.*
 

@@ -1,0 +1,75 @@
+{
+  // Light and twin-engined, with the mains mounted either side of the
+  // centreline. Differential throttle is therefore a second, independent source
+  // of torque, and the allocator finds it without being told it exists.
+  //
+  // The catch: both mains have a high floor and a slow light, so using them for
+  // attitude means committing to a large thrust asymmetry. Fast, but not
+  // delicate.
+  "name": "interceptor",
+  "mass": 600.0,
+  "length": 9.0,
+  "width": 2.0,
+
+  "thrusters": [
+    {
+      "at": [-1.0, 0.8],
+      "direction_deg": 0.0,
+      "max_thrust": 24000.0,
+      "min_thrust": 9600.0,
+      "ignition_time": 0.30,
+      "ramp_up": 60000.0,
+      "ramp_down": 120000.0,
+      "gimbal_deg": 8.5,
+      "gimbal_rate_deg": 50.0
+    },
+    {
+      "at": [-1.0, -0.8],
+      "direction_deg": 0.0,
+      "max_thrust": 24000.0,
+      "min_thrust": 9600.0,
+      "ignition_time": 0.30,
+      "ramp_up": 60000.0,
+      "ramp_down": 120000.0,
+      "gimbal_deg": 8.5,
+      "gimbal_rate_deg": 50.0
+    },
+
+    {
+      "at": [0.889, 0.0],
+      "direction_deg": 90.0,
+      "max_thrust": 2000.0,
+      "min_thrust": 500.0,
+      "ignition_time": 0.015,
+      "ramp_up": 30000.0,
+      "ramp_down": 50000.0
+    },
+    {
+      "at": [0.889, 0.0],
+      "direction_deg": -90.0,
+      "max_thrust": 2000.0,
+      "min_thrust": 500.0,
+      "ignition_time": 0.015,
+      "ramp_up": 30000.0,
+      "ramp_down": 50000.0
+    },
+    {
+      "at": [-0.889, 0.0],
+      "direction_deg": 90.0,
+      "max_thrust": 2000.0,
+      "min_thrust": 500.0,
+      "ignition_time": 0.015,
+      "ramp_up": 30000.0,
+      "ramp_down": 50000.0
+    },
+    {
+      "at": [-0.889, 0.0],
+      "direction_deg": -90.0,
+      "max_thrust": 2000.0,
+      "min_thrust": 500.0,
+      "ignition_time": 0.015,
+      "ramp_up": 30000.0,
+      "ramp_down": 50000.0
+    }
+  ]
+}

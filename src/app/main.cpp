@@ -9,6 +9,7 @@
 #include <thread>
 
 #include "core/World.hpp"
+#include "data/RocketCatalogue.hpp"
 #include "render/Camera.hpp"
 #include "render/InputTranslator.hpp"
 #include "render/Renderer.hpp"
@@ -19,13 +20,25 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-rf::WorldConfig chooseWorld(int argc, char** argv) {
+rf::WorldConfig chooseWorld(int argc, char** argv, const rf::RocketCatalogue& catalogue) {
+    bool        orbit = false;
+    std::string rocket;
+
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
-        if (arg == "--world=orbit") return rf::orbitWorld();
-        if (arg == "--world=empty") return rf::defaultWorld();
+        if (arg == "--world=orbit") orbit = true;
+        if (arg == "--world=empty") orbit = false;
+        if (arg.rfind("--rocket=", 0) == 0) rocket = arg.substr(9);
     }
-    return rf::defaultWorld();
+
+    if (!rocket.empty() && !catalogue.find(rocket)) {
+        std::cerr << "unknown rocket '" << rocket << "', available:";
+        for (const std::string& n : catalogue.names()) std::cerr << " " << n;
+        std::cerr << "\n";
+    }
+
+    const rf::RocketSpec& spec = catalogue.findOrFirst(rocket);
+    return orbit ? rf::orbitWorld(spec) : rf::defaultWorld(spec);
 }
 
 // Open on a view that actually contains the interesting things. Starting zoomed
@@ -49,7 +62,17 @@ int main(int argc, char** argv) {
     rf::StateChannel state;
     rf::CommandQueue commands;
 
-    const rf::WorldConfig worldConfig = chooseWorld(argc, argv);
+    const rf::RocketCatalogue& catalogue = rf::RocketCatalogue::instance();
+    for (const rf::RocketLoadError& e : catalogue.errors()) {
+        std::cerr << "rocket load error: " << e.file << ": " << e.message << "\n";
+    }
+    if (catalogue.empty()) {
+        std::cerr << "no rockets found in " << rf::RocketCatalogue::defaultRocketDir()
+                  << " -- set $ROCKETFIGHT_ROCKETS to point at them\n";
+        return EXIT_FAILURE;
+    }
+
+    const rf::WorldConfig worldConfig = chooseWorld(argc, argv, catalogue);
 
     rf::SimulationLoop sim(worldConfig, state, commands);
     std::thread simThread([&sim] { sim.run(); });

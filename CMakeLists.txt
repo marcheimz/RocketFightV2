@@ -48,6 +48,13 @@ FetchContent_Declare(SFML
     SYSTEM
 )
 
+FetchContent_Declare(nlohmann_json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG        v3.11.3
+    GIT_SHALLOW    ON
+    SYSTEM
+)
+
 FetchContent_Declare(doctest
     GIT_REPOSITORY https://github.com/doctest/doctest.git
     GIT_TAG        v2.4.11
@@ -55,7 +62,7 @@ FetchContent_Declare(doctest
     SYSTEM
 )
 
-FetchContent_MakeAvailable(SFML doctest)
+FetchContent_MakeAvailable(SFML nlohmann_json doctest)
 
 find_package(Threads REQUIRED)
 
@@ -67,9 +74,26 @@ find_package(Threads REQUIRED)
 # ---------------------------------------------------------------------------
 add_library(rf_core STATIC
     src/core/World.cpp
+    src/core/Rocket.cpp
 )
 target_include_directories(rf_core PUBLIC src)
 target_link_libraries(rf_core PUBLIC rf_determinism PRIVATE rf_warnings)
+
+# ---------------------------------------------------------------------------
+# rf_data -- rocket definitions loaded from JSON.
+#
+# Separate from rf_core on purpose. Reading files and parsing JSON is I/O, and
+# core's whole claim is that it does none. This target does the I/O and hands
+# back plain RocketSpec values; nothing downstream can tell they came from disk.
+# ---------------------------------------------------------------------------
+set(ROCKETFIGHT_ROCKET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/rockets")
+configure_file(src/data/BuildPaths.hpp.in ${CMAKE_CURRENT_BINARY_DIR}/generated/data/BuildPaths.hpp @ONLY)
+
+add_library(rf_data STATIC
+    src/data/RocketCatalogue.cpp
+)
+target_include_directories(rf_data PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/generated)
+target_link_libraries(rf_data PUBLIC rf_core PRIVATE nlohmann_json::nlohmann_json rf_warnings)
 
 # ---------------------------------------------------------------------------
 # rf_sync -- lock-free SPSC primitives. Header-only.
@@ -82,6 +106,7 @@ target_link_libraries(rf_sync INTERFACE rf_core Threads::Threads)
 # rf_control -- the three control layers. Still no SFML.
 # ---------------------------------------------------------------------------
 add_library(rf_control STATIC
+    src/control/ThrustAllocator.cpp
     src/control/RocketFlyByWire.cpp
     src/control/HumanInput.cpp
     src/control/ScriptedControllers.cpp
@@ -96,7 +121,7 @@ add_library(rf_eval STATIC
     src/eval/EpisodeRunner.cpp
     src/eval/BatchRunner.cpp
 )
-target_link_libraries(rf_eval PUBLIC rf_core rf_control Threads::Threads PRIVATE rf_warnings)
+target_link_libraries(rf_eval PUBLIC rf_core rf_control rf_data Threads::Threads PRIVATE rf_warnings)
 
 # ---------------------------------------------------------------------------
 # rf_sim -- the real-time paced 1 kHz loop.
@@ -121,10 +146,10 @@ target_link_libraries(rf_render PUBLIC rf_core rf_sync SFML::Graphics PRIVATE rf
 # Executables
 # ---------------------------------------------------------------------------
 add_executable(rocketfight src/app/main.cpp)
-target_link_libraries(rocketfight PRIVATE rf_core rf_sim rf_render rf_control rf_sync rf_warnings)
+target_link_libraries(rocketfight PRIVATE rf_core rf_sim rf_render rf_control rf_data rf_sync rf_warnings)
 
 add_executable(rocketfight_eval src/eval/main.cpp)
-target_link_libraries(rocketfight_eval PRIVATE rf_core rf_eval rf_control rf_warnings)
+target_link_libraries(rocketfight_eval PRIVATE rf_core rf_eval rf_control rf_data rf_warnings)
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -138,8 +163,11 @@ add_executable(rf_tests
     tests/test_determinism.cpp
     tests/test_sync.cpp
     tests/test_control.cpp
+    tests/test_rockets.cpp
+    tests/test_actuators.cpp
+    tests/test_data.cpp
 )
 target_link_libraries(rf_tests PRIVATE
-    rf_core rf_control rf_sync rf_eval doctest::doctest Threads::Threads rf_warnings)
+    rf_core rf_control rf_data rf_sync rf_eval doctest::doctest Threads::Threads rf_warnings)
 
 add_test(NAME rf_tests COMMAND rf_tests)

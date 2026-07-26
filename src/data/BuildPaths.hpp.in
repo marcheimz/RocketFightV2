@@ -1,0 +1,10 @@
+#pragma once
+
+namespace rf {
+
+// Configured by CMake so a binary run from anywhere in the tree can still find
+// the rocket definitions without an install step. It is the last fallback:
+// $ROCKETFIGHT_ROCKETS and ./rockets both win over it.
+inline constexpr const char* kSourceRocketDir = "@ROCKETFIGHT_ROCKET_DIR@";
+
+}  // namespace rf

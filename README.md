@@ -88,20 +88,26 @@ carries its `tick` and `time`, which is everything an interpolating renderer wou
 
 ```
 src/
-  core/         Vec2, Body, World, integrator, Command, ControlInput, Intent, Observation,
-                Snapshot. Pure C++. No SFML. No threads. No I/O. No wall clock.
+  core/         Vec2, Body, Thruster, RocketSpec, RocketTypes, Rocket, World, integrator,
+                Command, ControlInput, Intent, Observation, Snapshot.
+                Pure C++. No SFML. No threads. No I/O. No wall clock.
   control/      IntentSource, FlyByWire, Controller; LayeredController composing the first two;
-                RocketFlyByWire; human + scripted implementations; name→factory registry.
+                ThrustAllocator; RocketFlyByWire<RocketT>; human + scripted implementations;
+                name→factory registry.
   sync/         StateChannel (triple buffer), CommandQueue (SPSC ring).
   sim/          SimulationLoop: real-time pacing, accumulator, publishing.
   render/       SFML window, follow-camera, Renderer::draw(const Snapshot&).
   app/          main(): wires window + input + sim thread.
+  data/         RocketCatalogue: loads rockets/*.json into RocketSpec values.
+                The only place in the project that opens a file.
   eval/         Scenario, Metrics, episode runner, parallel batch runner. Links core only.
 tests/          Determinism hashes, integrator accuracy, channel/queue correctness.
 ```
 
 `core`, `control` and `eval` have **no link dependency on SFML** — enforced by the CMake target
-graph, not by convention. Only `render` and `app` link it.
+graph, not by convention. Only `render` and `app` link it. `core` additionally does no file I/O at
+all: parsing rocket JSON lives in `data`, which hands back plain `RocketSpec` values that nothing
+downstream can tell came from disk.
 
 ## The physics model
 
@@ -121,55 +127,92 @@ struct Body {
 void applyForceAt(Body&, Vec2 f, Vec2 localOffset);   // -> force += f, torque += cross(r, f)
 ```
 
-Rockets therefore steer physically: thrust applied at a gimballed nozzle offset from the centre of
-mass produces torque, and the body has real rotational inertia. This is the reason for choosing
-rigid bodies over point masses — retrofitting orientation later would touch every snapshot,
-observation, controller, and draw call.
+Rockets therefore steer physically: thrust applied at a nozzle offset from the centre of mass
+produces torque, and the body has real rotational inertia. This is the reason for choosing rigid
+bodies over point masses — retrofitting orientation later would touch every snapshot, observation,
+controller, and draw call.
 
-State is `double`. At 1000 Hz an episode accumulates a million integration steps, and long orbital
-trajectories are exactly where `float`'s 24-bit mantissa starts to show; the cost is snapshot size,
-which is irrelevant at these entity counts. Conversion to `float` happens once, at the boundary
-where positions are handed to SFML for drawing.
+### Vehicles are thruster layouts, defined in JSON
 
-Integration is **semi-implicit (symplectic) Euler**, which at a 1 ms step is accurate and stable
-for thrust-and-gravity dynamics, and behaves far better than explicit Euler over long episodes —
-symplectic integrators do not bleed energy out of an orbit the way explicit Euler does. It sits
-behind a single `integrate()` function so RK4 or velocity Verlet is a contained swap.
+There is no separate concept of "RCS", no vehicle-shaped code in the world's tick
+loop, and no vehicle definitions in the source at all. A rocket is a hull and a list of thrusters,
+loaded from [`rockets/*.json`](rockets/) at startup:
 
-### Environment: zero-g, with optional attractors
+```jsonc
+{
+  // "at" is [along, across] as a fraction of half-length and half-width, so the
+  // layout survives resizing the hull. Angles are degrees; a direction of 0 is
+  // the force the thruster applies to the hull, pointing forward.
+  "name": "classic",
+  "mass": 1000.0, "length": 12.0, "width": 3.0,
 
-The default world is **empty space with no ambient force at all** — pure Newtonian drift, where a
-rocket keeps whatever velocity it was last given until something changes it. Gravity is not a
-constant buried in the integrator; it is *data*:
-
-```cpp
-struct Attractor {          // a dense planet
-    Vec2 pos;
-    Real mu;                // G·M, the only gravitational parameter that matters
-    Real radius;            // for rendering, and for later collision
-};
-
-struct WorldConfig {
-    std::vector<Attractor> attractors;   // empty  ->  zero-g
-    // ...
-};
+  "thrusters": [
+    { "at": [-1.0, 0.0], "direction_deg": 0.0,
+      "max_thrust": 40000.0,
+      "min_thrust": 12000.0,     // cannot be throttled below 30%
+      "ignition_time": 0.25,     // seconds before it produces anything
+      "ramp_up": 120000.0,       // N/s
+      "ramp_down": 200000.0,
+      "gimbal_deg": 11.5,
+      "gimbal_rate_deg": 40.0 }  // the nozzle slews, it does not snap
+  ]
+}
 ```
 
-Per tick, each body accumulates `Σ mu * r̂ / (|r|² + ε²)` over the attractors. The softening term
-`ε` keeps the force finite if a body passes through a singularity, which matters while there are
-no collisions to stop it. Zero attractors is the default and costs an empty loop; one or several
-dense planets gives orbits, slingshots and unstable trajectories to play with — which is where
-this gets interesting for controller experiments later.
+JSON rather than YAML because it is the more common format, and `nlohmann/json` can be told to
+accept comments — which removes YAML's one real advantage for hand-authored config. A vehicle
+definition nobody can annotate is a vehicle definition nobody maintains.
 
-Uniform gravity, if it is ever wanted, is one more optional field rather than a different world.
+Attitude control is not postulated, it is *geometry*. Two opposed pairs at nose and tail: fire
+diagonally opposite ones and the forces cancel while the torques add, which is a pure couple; fire
+the two on the same side and you translate with no net torque. Nothing in the code arranges that —
+it falls out of where the thrusters are.
 
-**Units are SI throughout**: metres, seconds, radians, kilograms, newtons. No pixel-space physics —
-the renderer converts at the last moment.
+### Actuators have dynamics, and that is the point
 
-**The world is bounded at 1000 km from the origin.** Not a wall: crossing it ends a headless
-episode with `OutOfBounds`, and in the windowed game it is drawn as a boundary circle. In zero-g a
-rocket that drifts off with a bad controller would otherwise burn the full tick budget travelling
-nowhere, and every batch run would be paced by its most useless member.
+A `ControlInput` is a *demand*, not a result. Between asking and receiving:
+
+- **Ignition delay.** A thruster commanded on produces nothing for `ignition_time`. A correction
+  decided now does not begin for a quarter of a second on some vehicles.
+- **A thrust floor.** Once lit it cannot be throttled below `min_thrust`. It is off, or it is
+  somewhere in `[min, max]` — nothing in between, at any price.
+- **Ramp rates.** Thrust moves toward its demand at a finite N/s, and decays rather than vanishing.
+- **Nozzle slew.** Gimbals travel at `gimbal_rate`, so *reversing* a nozzle takes real time.
+
+All of it is simulation state: integrated every tick, hashed for determinism, and carried into the
+snapshot so the renderer draws the plume that exists rather than the one that was requested.
+
+The consequence is that control gets genuinely harder, in ways with names:
+
+- Allocation becomes **partly discrete**. The continuous least-squares answer is often a level the
+  vehicle cannot hold, so it is rounded to off-or-floor — and the controller must own that rounding
+  rather than let the simulation do it silently.
+- Attitude needs a **deadband**. Below some error the smallest available correction is larger than
+  the error itself, and chasing it is a limit cycle wearing a control loop's clothes. The
+  fly-by-wire computes that limit from the layout and stops inside it.
+- Rate profiles need **dead-time compensation**. A gimbal-only vehicle brakes a turn by swinging its
+  nozzle all the way across, which takes 1.6 s; a profile that assumes braking is instant commits to
+  a rate it cannot stop from and overshoots every time, in both directions.
+- Precision is **bounded by physics, not tuning**. `minImpulseDeltaV()` — the thrust floor acting
+  over the ignition delay — is the finest velocity change a vehicle can make. For `classic` that is
+  3.1 m/s. No controller beats it, so the tests assert against *it* rather than a hopeful constant.
+
+Derived capability is computed from the layout rather than declared, which is what lets one
+controller fly all of them:
+
+```cpp
+Real maxForwardAccel() const;   // sum of the forward-pointing thrust
+Real maxLateralAccel() const;   // the weaker of left and right
+Real maxAngAccel() const;       // angular authority from placement alone: zero without RCS
+Real maxGimbalAngAccel() const; // ...and the authority that exists only while burning
+bool mustPointToThrust() const; // little lateral authority => the nose must lead
+```
+
+Four vehicles ship in [`rockets/`](rockets/): `classic` (one gimballed main plus two opposed
+pairs), `norcs` (no attitude thrusters at all, so it can only steer while the engine is lit),
+`lander` (real side-thrusting authority, so it does not need to point its nose where it is going),
+and `interceptor` (twin mains either side of the centreline, making differential throttle a second
+source of torque). Adding a fifth means adding a file — no recompilation, and no new control code.
 
 ### The tick
 
@@ -227,33 +270,61 @@ struct Intent {
 cares about, so the same intent is valid for any vehicle. `Mode::Velocity` also gives the classic
 space-sim "kill relative velocity" for free: target velocity zero.
 
-### Layer 2 — `FlyByWire`: intent → actuators, specific to the vehicle
+### Layer 2 — `FlyByWire`: intent → actuators, built from the spec
 
 ```cpp
-class FlyByWire {
+class RocketFlyByWire final : public FlyByWire {
 public:
-    virtual ~FlyByWire() = default;
-    virtual ControlInput resolve(const Intent&, const Observation&) = 0;
-    virtual void reset() = 0;
+    explicit RocketFlyByWire(const RocketSpec& spec);   // allocator solved once, here
+    ControlInput resolve(const Intent&, const Observation&) override;
 };
 ```
 
-This is where the vehicle's actual configuration lives — thruster count and placement, gimbal
-range, RCS authority, inertia. Achieving a world-frame acceleration with a single gimballed main
-engine means *rotating the ship to point at it first*, so the fly-by-wire is a real closed-loop
-attitude controller (PD on heading error driving RCS, gimbal for fine correction) with a throttle
-law on top. It is stateful, hence `reset()`.
+This is where the vehicle's configuration is *used* — thruster placement, gimbal range, angular
+authority, thrust floors, ignition delays, inertia. It hardcodes no layout. Whether the nose must
+lead, how much angular authority exists, whether that authority survives the engine being shut
+down, how long corrections take to arrive, and how tight a deadband the thrust floors permit are
+all read from the spec.
 
-The payoff: give the rocket a wider gimbal or two more RCS thrusters and only the fly-by-wire
-changes. The pilot, the HUD, and any intent-level AI are untouched.
+That is why one implementation flies a lander, a gimbal-only rocket and a twin-engined interceptor,
+and why they still feel like different vehicles — **including rockets added as JSON after this code
+was written**.
+
+#### Control allocation
+
+Turning "I want this force and this torque" into thruster levels is the interesting part. Each
+thruster contributes a fixed direction of a 3D wrench (force x, force y, torque) scaled by its
+level; stack those into a 3×N matrix `B` and the question is to find levels `u` with `B u = w`.
+That is generally not exactly solvable, so [`ThrustAllocator`](src/control/ThrustAllocator.hpp)
+uses the damped pseudo-inverse:
+
+```
+u = Bᵀ (B Bᵀ + λI)⁻¹ w
+```
+
+Three properties make this the right tool rather than a clever one:
+
+- **Attitude control falls out for free.** Minimum-norm means asking for pure torque on a symmetric
+  layout produces the balanced opposed pair — not because anything balanced it, but because firing
+  one thruster alone needs a larger level *and* leaves a residual force the solution is penalised
+  for.
+- **Unachievable requests degrade instead of lying.** Ask the classic rocket to push sideways and
+  it returns approximately nothing, which is the honest answer, rather than a confident wrong one.
+  The damping `λ` is what keeps that well-defined when a whole axis of authority is missing.
+- **It is layout-agnostic.** `B` is built from the spec, so a new rocket type needs no new control
+  code.
+
+Thrusters cannot pull, so negative levels are clamped, and clamping costs real authority — a single
+clamped pass delivers only 40% of a symmetric layout's torque. Re-solving on the residual recovers
+it, but geometrically, so the solver iterates to convergence rather than the two passes that look
+sufficient and quietly stall at 87%.
 
 ### Layer 3 — `Controller`: what the simulation actually talks to
 
 ```cpp
 struct ControlInput {
-    Real throttle{};   // [0, 1]   main engine
-    Real gimbal{};     // [-1, 1]  nozzle deflection -> thrust vectoring
-    Real rcs{};        // [-1, 1]  attitude thrusters -> pure torque
+    std::array<Real, kMaxThrusters> level{};    // [0, 1]  per thruster
+    std::array<Real, kMaxThrusters> gimbal{};   // [-1, 1] per thruster, ignored if fixed
     bool fire{};
 };
 
@@ -265,9 +336,9 @@ public:
 };
 ```
 
-`rcs` exists because gimballed thrust alone cannot rotate a rocket without also accelerating it —
-in zero-g that makes the thing unflyable. Real spacecraft carry reaction control thrusters for
-exactly this, so the model gets them too: a pure torque, no net force.
+One entry per thruster, rather than a `throttle`/`gimbal`/`rcs` triple. That triple silently assumed
+one gimballed engine plus an abstract torque source — which is precisely the assumption that made a
+second engine, or no attitude thrusters at all, impossible to express.
 
 The simulation only ever knows `Controller`, and the layering is composition above it:
 
@@ -382,7 +453,12 @@ sudo dnf install libX11-devel libXrandr-devel libXcursor-devel libXi-devel \
                  freetype-devel systemd-devel mesa-libGL-devel
 ```
 
-Audio and networking modules are disabled, so OpenAL is not needed.
+Audio and networking modules are disabled, so OpenAL is not needed. **nlohmann/json** is fetched
+the same way, for the rocket definitions.
+
+Rockets are looked for in `$ROCKETFIGHT_ROCKETS`, then `./rockets`, then the source directory
+configured at build time — so the binaries run from anywhere in the tree with no install step, and
+editing a vehicle needs no rebuild.
 
 ## Milestone 1
 
@@ -432,29 +508,37 @@ would win, which looks precisely like a stuck stick.
 
 | Gamepad | Keyboard | Effect |
 | --- | --- | --- |
-| right trigger | `W` | main engine throttle |
-| left stick X | `A` / `D` | RCS — rotate left / right |
-| right stick X | arrows | gimbal the nozzle left / right |
+| right trigger | `W` | open every forward-pointing thruster |
+| left stick X | `A` / `D` | open whichever thrusters torque that way |
+| right stick X | arrows | deflect every gimballed nozzle |
+
+Direct mode still has to know the layout, because "turn left" means firing whichever thrusters
+produce a positive torque on *this* vehicle. What makes it direct is that there is no closed loop
+and no allocation: the stick opens thruster groups, and whatever the ship then does is your
+problem.
 
 **Always:** `Start`/`Tab` toggles fly-by-wire vs direct, `A`/`Space` fires (wired through, no
 projectiles yet), `Back`/`R` resets the world, scroll zooms, `F1` shows the raw input overlay,
 `Esc` quits.
 
 Run `./build/rocketfight --world=orbit` for the planet, or `--world=empty` (the default) for
-zero-g.
+zero-g, and `--rocket=classic|norcs|lander|interceptor` to pick the airframe. They fly very
+differently, and no controller code changes between them.
 
 ## Status
 
-Milestone 1 is complete and running. Measured on a 20-core machine:
+Running, with vehicles as data and actuators that fight back. Measured on a 20-core machine:
 
 - **Simulation:** a steady 1000.0 Hz at 0.0% of the tick budget, no catch-up resyncs.
-- **Rendering:** 120 fps against vsync, snapshot age under 0.01 ms — the renderer is never
-  more than a single tick behind, which is why it needs no interpolation.
-- **Headless:** 207 M ticks/s across the pool, about 207,000x real time, and identical jobs
-  produce identical state hashes.
-- **Tests:** 30 cases, 162 assertions, all passing — including a circular orbit that holds its
-  radius to under 0.1% over a full revolution, and a triple buffer hammered by two real threads
-  without a single torn read.
+- **Rendering:** 120 fps against vsync, snapshot age under 0.01 ms — the renderer is never more
+  than a single tick behind, which is why it needs no interpolation.
+- **Headless:** 116 M ticks/s across the pool, ~116,000x real time, sweeping every controller
+  against every rocket in both worlds, with identical jobs producing identical state hashes.
+- **Tests:** 58 cases, 2452 assertions, all passing.
 
-Next up is whatever you want to experiment with: collisions, projectiles, metrics and scoring, or
-the first real controllers.
+Physics, determinism and data-loading are asserted tightly. The closed-loop flying checks are
+deliberately loose — they exist to catch "this vehicle cannot be flown at all", not to pin a set of
+gains that is expected to be optimised against metrics later.
+
+Next up: brute-force optimisation of the fly-by-wire against the actuator constraints, and then
+whatever else you want to experiment with — collisions, projectiles, scoring, learned controllers.

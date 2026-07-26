@@ -52,22 +52,38 @@ public:
     virtual const Intent* lastIntent() const { return nullptr; }
 };
 
+// Builds the fly-by-wire for a given vehicle. Defined in RocketFlyByWire.cpp.
+std::unique_ptr<FlyByWire> makeFlyByWire(const RocketSpec& spec);
+
 // Composes layers 1 and 2 into a Controller. A human pilot and an intent-level
 // policy are the same object with a different IntentSource -- which is the
 // property that lets them be compared on equal terms.
+//
+// By default the fly-by-wire is built at reset from whatever vehicle the world
+// actually contains. That is what makes a policy portable: the same
+// `seek-target` entry in the registry flies a lander or a gimbal-only rocket
+// without knowing either exists -- including rockets added as JSON after this
+// code was written.
 class LayeredController final : public Controller {
 public:
+    explicit LayeredController(std::unique_ptr<IntentSource> source)
+        : source_(std::move(source)), autoSelect_(true) {}
+
     LayeredController(std::unique_ptr<IntentSource> source, std::unique_ptr<FlyByWire> fbw)
         : source_(std::move(source)), fbw_(std::move(fbw)) {}
 
     ControlInput evaluate(const Observation& obs) override {
+        if (!fbw_) return {};
         lastIntent_ = source_->intent(obs);
         return fbw_->resolve(lastIntent_, obs);
     }
 
     void reset(std::uint64_t seed, const WorldConfig& env) override {
+        if (autoSelect_ && !env.rockets.empty()) {
+            fbw_ = makeFlyByWire(env.rockets.front().spec);
+        }
         source_->reset(seed, env);
-        fbw_->reset();
+        if (fbw_) fbw_->reset();
         lastIntent_ = Intent{};
     }
 
@@ -76,6 +92,7 @@ public:
 private:
     std::unique_ptr<IntentSource> source_;
     std::unique_ptr<FlyByWire>    fbw_;
+    bool                          autoSelect_{false};
     Intent                        lastIntent_{};
 };
 

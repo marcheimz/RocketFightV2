@@ -124,14 +124,14 @@ void Renderer::drawAttractors(sf::RenderWindow& window, const Snapshot& snap) {
 // stays exact, only its icon stops shrinking.
 Real Renderer::visualScale(const RocketView& r, const Camera& camera) {
     constexpr Real kMinPixels = 22;
-    const Real     pixels     = r.length / camera.metersPerPixel();
+    const Real     pixels     = r.spec.length / camera.metersPerPixel();
     return pixels >= kMinPixels ? Real(1) : kMinPixels / pixels;
 }
 
 void Renderer::drawRocket(sf::RenderWindow& window, const RocketView& r, const Camera& camera) {
     const Real  scale   = visualScale(r, camera);
-    const float halfLen = static_cast<float>(r.length * scale / Real(2));
-    const float halfWid = static_cast<float>(r.width * scale / Real(2));
+    const float halfLen = static_cast<float>(r.spec.length * scale / Real(2));
+    const float halfWid = static_cast<float>(r.spec.width * scale / Real(2));
     const float pixel   = static_cast<float>(camera.metersPerPixel());
 
     // Local frame: nose at +x, tail at -x. Built in metres, because the view is
@@ -148,28 +148,48 @@ void Renderer::drawRocket(sf::RenderWindow& window, const RocketView& r, const C
     hull_.setPosition(toView(r.pos));
     hull_.setRotation(sf::degrees(toViewDegrees(r.angle)));
 
-    // Exhaust, drawn from the nozzle and deflected by the actual gimbal command,
-    // so what the fly-by-wire is doing with the nozzle is visible rather than
-    // inferred.
-    if (r.throttle > Real(0.001)) {
-        const Real gimbalAngle = clamp(r.gimbal, Real(-1), Real(1)) * r.maxGimbal;
-        const Real plumeLen    = r.length * scale * (Real(0.3) + Real(1.5) * r.throttle);
-        const float pw         = halfWid * 0.8f;
+    // A plume per thruster, wherever this particular vehicle happens to have
+    // them, drawn from the actual mount point and along the actual deflected
+    // nozzle. Attitude thrusters firing in opposed pairs are then visible as
+    // exactly that, rather than as an invisible torque appearing from nowhere.
+    Real strongest = 0;
+    for (std::size_t i = 0; i < r.spec.count(); ++i) {
+        strongest = std::max(strongest, r.spec[i].maxThrust);
+    }
+
+    for (std::size_t i = 0; i < r.spec.count(); ++i) {
+        const Thruster&      t = r.spec[i];
+        const ThrusterState& a = r.actuators[i];
+
+        // Drawn from what the thruster is *doing*, not what it was told to do.
+        // An engine commanded on but still counting down its ignition delay
+        // correctly shows nothing, and one ramping up visibly grows.
+        if (a.thrust <= Real(1e-6)) continue;
+        const Real level = t.maxThrust > Real(0) ? a.thrust / t.maxThrust : Real(0);
+
+        // Scale each plume by how much thrust that nozzle actually has, so an
+        // attitude puff does not look like a main engine burn.
+        const Real relative = strongest > Real(0) ? t.maxThrust / strongest : Real(1);
+        const Real plumeLen =
+            r.spec.length * scale * relative * (Real(0.25) + Real(1.2) * level);
+        const auto pw = static_cast<float>(r.spec.width * scale * relative * Real(0.3));
 
         plume_.setPoint(0, {0.f, pw});
         plume_.setPoint(1, {static_cast<float>(plumeLen), 0.f});
         plume_.setPoint(2, {0.f, -pw});
 
-        const auto alpha = static_cast<std::uint8_t>(clamp(Real(90) + Real(140) * r.throttle,
-                                                           Real(0), Real(255)));
+        const auto alpha =
+            static_cast<std::uint8_t>(clamp(Real(90) + Real(140) * level, Real(0), Real(255)));
         plume_.setFillColor(sf::Color{kPlumeHot.r, kPlumeHot.g, kPlumeHot.b, alpha});
         plume_.setOutlineThickness(0.f);
 
-        const Vec2 nozzleWorld = r.pos + rotate({-r.length * scale / Real(2), Real(0)}, r.angle);
-        plume_.setPosition(toView(nozzleWorld));
-        // Thrust points along the deflected nozzle; the plume points the other
-        // way, hence the half turn.
-        plume_.setRotation(sf::degrees(toViewDegrees(r.angle + gimbalAngle + kPi)));
+        const Vec2 mount = r.pos + rotate(t.mountLocal * scale, r.angle);
+        plume_.setPosition(toView(mount));
+
+        // Exhaust leaves opposite the force the thruster applies to the hull,
+        // along the nozzle's actual angle -- which lags the commanded one.
+        plume_.setRotation(
+            sf::degrees(toViewDegrees(r.angle + t.directionLocal + a.gimbalAngle + kPi)));
         window.draw(plume_);
     }
 
@@ -186,11 +206,22 @@ void Renderer::drawVectors(sf::RenderWindow& window, const RocketView& r, const 
     // needed help in the first place.
     addLine(lines_, toView(r.pos), toView(r.pos + r.vel * scale), kVelocity);
 
-    if (r.throttle > Real(0.001)) {
-        const Real gimbalAngle = clamp(r.gimbal, Real(-1), Real(1)) * r.maxGimbal;
-        const Vec2 dir = fromAngle(r.angle + gimbalAngle);
-        addLine(lines_, toView(r.pos),
-                toView(r.pos + dir * (r.length * scale * Real(2) * r.throttle)), kThrust);
+    // Net thrust: the vector sum of every firing nozzle, in world space. On a
+    // symmetric attitude burn this is correctly zero -- the ship is rotating,
+    // not accelerating, and the HUD should say so.
+    Vec2 net{};
+    for (std::size_t i = 0; i < r.spec.count(); ++i) {
+        net += rotate(r.spec[i].forceLocal(r.actuators[i].thrust, r.actuators[i].gimbalAngle),
+                      r.angle);
+    }
+
+    const Real netAccel = length(net) / r.spec.mass;
+    if (netAccel > Real(0.01)) {
+        const Vec2 dir = normalizedOr(net, Vec2{});
+        const Real len = r.spec.length * scale * Real(2) *
+                         clamp(netAccel / std::max(r.spec.maxForwardAccel(), Real(1e-6)),
+                               Real(0), Real(1));
+        addLine(lines_, toView(r.pos), toView(r.pos + dir * len), kThrust);
     }
 
     window.draw(lines_);
@@ -209,13 +240,30 @@ void Renderer::drawHud(sf::RenderWindow& window, const Snapshot& snap, const Cam
 
     if (!snap.rockets.empty()) {
         const RocketView& r = snap.rockets.front();
+        os << std::string(r.spec.name.view()) << "\n";
         os << "speed    " << length(r.vel) << " m/s\n";
         os << "position " << formatMetres(r.pos.x) << ", " << formatMetres(r.pos.y) << "\n";
         os << "from origin " << formatMetres(length(r.pos)) << "\n";
         os << "heading  " << (r.angle * Real(180) / kPi) << " deg   spin "
            << (r.angVel * Real(180) / kPi) << " deg/s\n";
+
         os << std::setprecision(2);
-        os << "throttle " << r.throttle << "  gimbal " << r.gimbal << "  rcs " << r.rcs << "\n";
+        Real actual = 0;
+        Real capacity = 0;
+        for (std::size_t i = 0; i < r.spec.count(); ++i) {
+            actual   += r.actuators[i].thrust;
+            capacity += r.spec[i].maxThrust;
+        }
+        os << "thrust   " << (capacity > Real(0) ? actual / capacity : Real(0)) << "  ";
+
+        // Demanded vs actual, per thruster. '#' burning, '+' commanded but still
+        // lighting, '.' idle -- so ignition lag is visible rather than puzzling.
+        for (std::size_t i = 0; i < r.spec.count(); ++i) {
+            const bool burning   = r.actuators[i].thrust > Real(1e-6);
+            const bool commanded = r.ctrl.level[i] > Real(0.001);
+            os << (burning ? '#' : (commanded ? '+' : '.'));
+        }
+        os << "\n";
         os << std::setprecision(1);
     }
 
