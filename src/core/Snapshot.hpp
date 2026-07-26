@@ -67,6 +67,21 @@ struct CommandView {
 // silent allocation on the publish path.
 static_assert(std::is_trivially_copyable_v<CommandView>);
 
+// Which layer 2 is actually flying. Filled in by SimulationLoop for the same
+// reason CommandView is: the choice belongs to the loop, not to the world, and
+// the renderer must not reach across the thread boundary to ask.
+//
+// A submission that failed to load is reported rather than hidden -- the loop
+// falls back to the built-in so the ship still flies, and silently substituting
+// a different controller than the one on screen would be the worst of both.
+struct FlyByWireView {
+    RocketName name{};        // "built-in", or the submission's manifest name
+    bool       submission{};
+    bool       loadFailed{};
+};
+
+static_assert(std::is_trivially_copyable_v<FlyByWireView>);
+
 struct Snapshot {
     Tick tick{};
     Real time{};
@@ -76,6 +91,9 @@ struct Snapshot {
 
     Real     boundsRadius{};
     SimStats stats{};
+
+    // Which fly-by-wire is flying rockets.front().
+    FlyByWireView flyByWire{};
 
     // The command flown by rockets.front(), the one vehicle the loop controls.
     CommandView command{};

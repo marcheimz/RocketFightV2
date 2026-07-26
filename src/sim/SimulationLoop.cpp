@@ -5,6 +5,7 @@
 #include <thread>
 #include <utility>
 
+#include "control/AbiFlyByWire.hpp"
 #include "control/RocketFlyByWire.hpp"
 
 namespace rf {
@@ -33,13 +34,9 @@ constexpr Nanos kSpinMargin{150'000};  // 150 us
 
 SimulationLoop::SimulationLoop(WorldConfig cfg, StateChannel& state, CommandQueue& commands)
     : world_(std::move(cfg)), state_(&state), commands_(&commands) {
-    // No vehicle named here either: the fly-by-wire is built from the world's
-    // rocket at reset, so changing the vehicle changes how it flies without
-    // touching the loop.
-    auto human = std::make_unique<GamepadIntentSource>(input_);
-    human_     = human.get();
-    layered_   = std::make_unique<LayeredController>(std::move(human));
-    direct_    = std::make_unique<DirectHumanController>(input_);
+    // Neither the vehicle nor the fly-by-wire is named here: both come out of
+    // rosters the app supplies, and both are fitted in refitControllers().
+    direct_ = std::make_unique<DirectHumanController>(input_);
 
     restart();
 }
@@ -47,6 +44,13 @@ SimulationLoop::SimulationLoop(WorldConfig cfg, StateChannel& state, CommandQueu
 void SimulationLoop::setWorldRoster(std::vector<WorldConfig> roster, std::size_t current) {
     roster_  = std::move(roster);
     current_ = roster_.empty() ? 0 : std::min(current, roster_.size() - 1);
+}
+
+void SimulationLoop::setFlyByWireRoster(std::vector<FlyByWireChoice> roster, std::size_t current) {
+    if (roster.empty()) return;
+    flyByWireRoster_  = std::move(roster);
+    flyByWireCurrent_ = std::min(current, flyByWireRoster_.size() - 1);
+    refitControllers();
 }
 
 Controller& SimulationLoop::activeController() {
@@ -59,25 +63,76 @@ Controller& SimulationLoop::activeController() {
                                                       : static_cast<Controller&>(*direct_);
 }
 
-void SimulationLoop::restart() {
+std::unique_ptr<FlyByWire> SimulationLoop::buildSelectedFlyByWire(const RocketSpec& spec) {
+    flyByWireFailed_ = false;
+
+    const FlyByWireChoice& choice = flyByWireRoster_[flyByWireCurrent_];
+    if (!choice.submission()) return makeFlyByWire(spec);
+
+    std::string error;
+    if (auto loaded = AbiFlyByWire::load(choice.libraryPath, spec, error)) return loaded;
+
+    // Keep flying. A submission that will not load for this airframe is a fact
+    // to report on the HUD, not a reason to leave the ship with no controller --
+    // and reporting it matters, because silently substituting a different
+    // fly-by-wire than the one named on screen is the one outcome worse than
+    // either.
+    flyByWireFailed_ = true;
+    return makeFlyByWire(spec);
+}
+
+void SimulationLoop::refitControllers() {
+    const WorldConfig& cfg  = world_.config();
+    const RocketSpec   spec = cfg.rockets.empty() ? RocketSpec{} : cfg.rockets.front().spec;
+
+    // Tear down first, load second. See the header: at most one submission
+    // library may be live, so everything that could be holding one is put back
+    // on the built-in before the selection is loaded.
+    layered_.reset();
+    human_ = nullptr;
+    bench_.reset(cfg, makeFlyByWire(spec));
+
+    std::unique_ptr<FlyByWire> selected = buildSelectedFlyByWire(spec);
+
+    // The benchmark outranks the pilot while armed, so it is the one that gets
+    // the selection -- otherwise arming it would quietly score the built-in
+    // while the HUD named a submission.
+    const bool benchArmed = benchmarkActive_.load(std::memory_order_relaxed);
+
+    auto human = std::make_unique<GamepadIntentSource>(input_);
+    human_     = human.get();
+
+    if (benchArmed) {
+        layered_ = std::make_unique<LayeredController>(std::move(human), makeFlyByWire(spec));
+        bench_.reset(cfg, std::move(selected));
+    } else {
+        layered_ = std::make_unique<LayeredController>(std::move(human), std::move(selected));
+    }
+
     // The controllers are built against the vehicle: the fly-by-wire's deadband,
     // dead-time compensation and allocator all come out of the spec, so a reset
     // that skipped this would fly the new airframe with the old one's numbers.
-    layered_->reset(world_.config().seed, world_.config());
-    direct_->reset(world_.config().seed, world_.config());
+    layered_->reset(cfg.seed, cfg);
+    direct_->reset(cfg.seed, cfg);
 
-    // The benchmark refits too, and its metrics start over: a score that spanned
-    // two airframes would not be a score for either.
-    bench_.reset(world_.config());
+    human_->setMode(velocityMode_.load(std::memory_order_relaxed) ? Intent::Mode::Velocity
+                                                                  : Intent::Mode::Acceleration);
     held_ = {};
+}
+
+void SimulationLoop::restart() {
+    refitControllers();
 }
 
 void SimulationLoop::setBenchmarkActive(bool on) {
     benchmarkActive_.store(on, std::memory_order_relaxed);
-    // Arming restarts the sequence from its seed, so the run in the window is
-    // the same run the headless binary reports for this vehicle and seed.
-    bench_.reset(world_.config());
-    held_ = {};
+
+    // A full refit rather than just resetting the harness: arming hands the
+    // selected fly-by-wire from the pilot to the benchmark, and disarming hands
+    // it back. Refitting also restarts the sequence from its seed, so the run in
+    // the window is the same run the headless binary reports for this vehicle
+    // and seed.
+    refitControllers();
     publishBenchmarkHud();
 }
 
@@ -91,6 +146,17 @@ void SimulationLoop::setVelocityMode(bool on) {
     human_->setMode(mode);
     bench_.setMode(mode);
     held_ = {};
+    publishBenchmarkHud();
+}
+
+void SimulationLoop::cycleFlyByWire(int step) {
+    if (flyByWireRoster_.size() < 2) return;
+
+    const auto n      = static_cast<int>(flyByWireRoster_.size());
+    flyByWireCurrent_ = static_cast<std::size_t>(
+        ((static_cast<int>(flyByWireCurrent_) + step) % n + n) % n);
+
+    refitControllers();
     publishBenchmarkHud();
 }
 
@@ -117,6 +183,12 @@ void SimulationLoop::handleCommand(const Command& c) {
                 return;
             case InputButton::NextVehicle:
                 cycleVehicle(1);
+                return;
+            case InputButton::NextFlyByWire:
+                cycleFlyByWire(1);
+                return;
+            case InputButton::PrevFlyByWire:
+                cycleFlyByWire(-1);
                 return;
             case InputButton::PrevVehicle:
                 cycleVehicle(-1);
@@ -166,6 +238,11 @@ void SimulationLoop::publish(const SimStats& stats) {
     // wall-clock stats above already make. A controller with no notion of Intent
     // says so by returning null, and the slot is a reused buffer, so this is
     // written on every publish rather than only when there is something to say.
+    const FlyByWireChoice& choice = flyByWireRoster_[flyByWireCurrent_];
+    slot.flyByWire.name       = RocketName::from(choice.name);
+    slot.flyByWire.submission = choice.submission();
+    slot.flyByWire.loadFailed = flyByWireFailed_;
+
     const Intent* commanded = activeController().lastIntent();
     slot.command.valid      = commanded != nullptr;
     slot.command.intent     = commanded != nullptr ? *commanded : Intent{};

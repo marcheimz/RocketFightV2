@@ -99,7 +99,8 @@ src/
   render/       SFML window, follow-camera, actuator panel, Renderer::draw(const Snapshot&).
   app/          main(): wires window + input + sim thread.
   data/         RocketCatalogue: loads rockets/*.json into RocketSpec values.
-                The only place in the project that opens a file.
+                SubmissionCatalogue: finds submitted .so files so they can be
+                flown by hand. The layer that is allowed to open a file.
   eval/         Scenario, episode runner, parallel batch runner, benchmark runner + JSON,
                 and rocketfight_runner: one benchmark job in one process, which is the
                 only place a submitted library is ever loaded.
@@ -723,10 +724,13 @@ reports only that a button went down.
 The other half: an agent submits a `FlyByWire`, the server builds it, runs the benchmark above
 against every vehicle in both modes, checks that it reproduces, and ranks it.
 
-> **[`SUBMISSIONS.md`](SUBMISSIONS.md) is the contract.** Everything a submitting agent needs — the
-> ABI function by function, units and sign conventions, the manifest, runnable build commands for C,
-> C++ and Rust, the real resource limits, the determinism rule, and a complete worked example — is
-> there, and it is written so that nobody has to read this source tree to make a submission work.
+> **[`COMPETITION.md`](COMPETITION.md) is the short form** — the whole contract in about 190 lines,
+> sized so an agent can hold all of it in context at once and still have room to think. Start there.
+>
+> **[`SUBMISSIONS.md`](SUBMISSIONS.md) is the full reference.** The ABI function by function, units
+> and sign conventions, the manifest, runnable build commands for C, C++ and Rust, the real resource
+> limits, the determinism rule, and a complete worked example — written so that nobody has to read
+> this source tree to make a submission work.
 
 ```sh
 ./build/rocketfight_server --port=8080 --data=server-data
@@ -930,8 +934,28 @@ and no allocation: the stick opens thruster groups, and whatever the ship then d
 problem.
 
 **Always:** `Start`/`Tab` toggles fly-by-wire vs direct, `A`/`Space` fires (wired through, no
-projectiles yet), `Back`/`R` resets the world, `LB`/`RB` or `[`/`]` cycles the vehicle, scroll
-zooms, `F1` shows the raw input overlay, `Esc` quits.
+projectiles yet), `Back`/`R` resets the world, `LB`/`RB` or `[`/`]` cycles the vehicle, the
+**D-pad** or `,`/`.` cycles the fly-by-wire, scroll zooms, `F1` shows the raw input overlay,
+`Esc` quits.
+
+### Flying a submission by hand
+
+The D-pad steps through the built-in fly-by-wire and every submission found in `server-data`
+(`--submissions=PATH` to look elsewhere; a plain directory of loose `.so` files works too). The
+built-in is always entry zero — whatever a submission turns out to do, there has to be a way back
+to something known to work. The HUD names whichever is flying.
+
+This composes with everything else, which is the point of layer 2 being an interface rather than a
+class: select a submission, press `B`, and the benchmark scores **that** submission live, on the
+same seeded sequence the leaderboard ranks it on. Cycle the vehicle underneath it and the
+submission is re-initialised against the new airframe — `rf_init` takes the spec, so flying `norcs`
+with `classic`'s thruster count would be a real bug rather than a cosmetic one.
+
+> **The game cannot sandbox a submission.** The server runs each evaluation in a separate,
+> supervised process precisely because a submission can hang or crash; `dlopen` here puts it inside
+> the game's own process, where no wall-clock kill can reach it. A buggy submission takes the window
+> down with it. That is an acceptable trade for flying your own work, and `examples/submissions/hostile_spin`
+> is sitting right there — do not load it and expect to get the window back.
 
 Run `./build/rocketfight --world=orbit` for the planet, or `--world=empty` (the default) for
 zero-g, and `--rocket=classic|norcs|lander|interceptor` to pick the airframe you start in. They fly

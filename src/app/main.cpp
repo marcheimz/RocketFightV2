@@ -13,6 +13,7 @@
 
 #include "core/World.hpp"
 #include "data/RocketCatalogue.hpp"
+#include "data/SubmissionCatalogue.hpp"
 #include "render/Camera.hpp"
 #include "render/InputTranslator.hpp"
 #include "render/Renderer.hpp"
@@ -24,6 +25,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 struct Options {
+    std::string submissions{"server-data"};
     bool        orbit{false};
     std::string rocket;
 };
@@ -36,6 +38,7 @@ Options parseOptions(int argc, char** argv, const rf::RocketCatalogue& catalogue
         if (arg == "--world=orbit") opts.orbit = true;
         if (arg == "--world=empty") opts.orbit = false;
         if (arg.rfind("--rocket=", 0) == 0) opts.rocket = arg.substr(9);
+        if (arg.rfind("--submissions=", 0) == 0) opts.submissions = arg.substr(14);
     }
 
     if (!opts.rocket.empty() && !catalogue.find(opts.rocket)) {
@@ -104,6 +107,28 @@ int main(int argc, char** argv) {
 
     rf::SimulationLoop sim(roster[startAt], state, commands);
     sim.setWorldRoster(roster, startAt);   // before the thread exists, so no lock is needed
+
+    // The built-in fly-by-wire, then every submission we can find. Entry zero is
+    // always the built-in: whatever a submission turns out to do, there has to
+    // be a way back to something known to work.
+    //
+    // Discovery happens here because the app is the layer allowed to touch a
+    // filesystem; the simulation is handed names and paths and never learns
+    // where they came from.
+    std::vector<rf::FlyByWireChoice> pilots{rf::FlyByWireChoice{"built-in", {}}};
+    const rf::SubmissionCatalogue    submissions = rf::SubmissionCatalogue::load(opts.submissions);
+    for (const rf::SubmissionEntry& e : submissions.all()) {
+        pilots.push_back(rf::FlyByWireChoice{e.name, e.libraryPath});
+    }
+    sim.setFlyByWireRoster(pilots, 0);
+
+    if (submissions.empty()) {
+        std::cerr << "no submissions found in '" << opts.submissions
+                  << "' -- flying the built-in fly-by-wire only\n";
+    } else {
+        std::cerr << "loaded " << submissions.size() << " submission(s) from '" << opts.submissions
+                  << "'; cycle with the D-pad or , .\n";
+    }
     std::thread simThread([&sim] { sim.run(); });
 
     sf::RenderWindow window(sf::VideoMode({1280u, 720u}), "RocketFightV2");

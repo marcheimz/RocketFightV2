@@ -112,6 +112,7 @@ configure_file(src/data/BuildPaths.hpp.in ${CMAKE_CURRENT_BINARY_DIR}/generated/
 
 add_library(rf_data STATIC
     src/data/RocketCatalogue.cpp
+    src/data/SubmissionCatalogue.cpp
 )
 target_include_directories(rf_data PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/generated)
 target_link_libraries(rf_data PUBLIC rf_core PRIVATE nlohmann_json::nlohmann_json rf_warnings)
@@ -155,8 +156,12 @@ set_target_properties(rf_core rf_control PROPERTIES POSITION_INDEPENDENT_CODE ON
 # living in src/, because src/ is this project's internals and a submission must
 # not be able to reach them by accident.
 #
-# Separate from rf_control so that dlopen does not become a dependency of the
-# game: rocketfight links rf_control and has no business needing libdl.
+# Kept separate from rf_control so that loading foreign code stays an explicit
+# dependency rather than something every target inherits. The game does now link
+# it -- you can select a submission and fly it by hand -- but that is a decision
+# visible in the target graph, and the evaluation path (runner, server) depends
+# on it for a different reason: those run submissions in a supervised process,
+# which the game cannot.
 # ---------------------------------------------------------------------------
 add_library(rf_abi_headers INTERFACE)
 target_include_directories(rf_abi_headers INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -211,7 +216,7 @@ target_link_libraries(rf_server
 add_library(rf_sim STATIC
     src/sim/SimulationLoop.cpp
 )
-target_link_libraries(rf_sim PUBLIC rf_core rf_control rf_sync Threads::Threads PRIVATE rf_warnings)
+target_link_libraries(rf_sim PUBLIC rf_core rf_control rf_abi rf_sync Threads::Threads PRIVATE rf_warnings)
 
 # ---------------------------------------------------------------------------
 # rf_render -- the only library that knows SFML exists.
@@ -328,6 +333,7 @@ add_executable(rf_tests
     tests/test_sim.cpp
     tests/test_benchmark.cpp
     tests/test_submission.cpp
+    tests/test_pilots.cpp
 )
 target_include_directories(rf_tests PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 # The fixtures are dlopened by path and the runner is forked by path, so neither

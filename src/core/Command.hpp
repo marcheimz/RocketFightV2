@@ -39,6 +39,11 @@ enum class InputButton : std::uint8_t {
     // translator only knows a button went down.
     NextVehicle,
     PrevVehicle,
+    // Step through the fly-by-wires the app handed the simulation: the built-in
+    // one and whatever submissions were discovered. Same division of labour --
+    // the translator knows a control moved, not what it selects.
+    NextFlyByWire,
+    PrevFlyByWire,
     Count,
 };
 

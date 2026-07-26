@@ -557,6 +557,17 @@ void Renderer::drawHud(sf::RenderWindow& window, const Snapshot& snap, const Cam
     os << std::fixed << std::setprecision(1);
 
     os << (hud.flyByWire ? "FLY-BY-WIRE" : "DIRECT") << "   [Start/Tab] toggle\n";
+
+    // Which layer 2 is flying, and whether it is one of yours. Named on every
+    // frame rather than only when it changes, because "what is actually
+    // controlling this ship" is the question the whole submission feature
+    // exists to let you ask.
+    if (!snap.flyByWire.name.empty()) {
+        os << "control  " << std::string(snap.flyByWire.name.view());
+        if (snap.flyByWire.submission) os << " (submission)";
+        if (snap.flyByWire.loadFailed) os << "  -- FAILED TO LOAD, flying built-in";
+        os << "   [D-pad / , .]\n";
+    }
     os << (hud.benchmark.velocityMode ? "VELOCITY  stick = target m/s"
                                       : "ACCELERATION  stick = fraction of max")
        << "   [Y/V] toggle\n";

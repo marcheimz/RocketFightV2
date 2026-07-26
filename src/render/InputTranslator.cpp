@@ -87,6 +87,15 @@ void InputTranslator::pollGamepad(CommandQueue& out) {
     emitButton(out, InputButton::KillVelocity, sf::Joystick::isButtonPressed(kPad, kBtnX));
     emitButton(out, InputButton::ToggleDirect, sf::Joystick::isButtonPressed(kPad, kBtnStart));
     emitButton(out, InputButton::Reset, sf::Joystick::isButtonPressed(kPad, kBtnBack));
+
+    // The D-pad, which on this driver arrives as a hat axis rather than four
+    // buttons. Thresholding it here keeps the translator's job unchanged -- it
+    // still only reports that a control moved -- while the meaning of "next
+    // fly-by-wire" stays on the simulation side where every other binding's
+    // meaning lives.
+    const Real hat = stick(sf::Joystick::Axis::PovX);
+    emitButton(out, InputButton::NextFlyByWire, hat > Real(0.5));
+    emitButton(out, InputButton::PrevFlyByWire, hat < Real(-0.5));
     emitButton(out, InputButton::PrevVehicle, sf::Joystick::isButtonPressed(kPad, kBtnLB));
     emitButton(out, InputButton::NextVehicle, sf::Joystick::isButtonPressed(kPad, kBtnRB));
     emitButton(out, InputButton::ToggleBenchmark, sf::Joystick::isButtonPressed(kPad, kBtnB));
@@ -115,6 +124,8 @@ void InputTranslator::pollKeyboard(CommandQueue& out) {
     emitButton(out, InputButton::KillVelocity, keyDown(Key::X));
     emitButton(out, InputButton::ToggleDirect, keyDown(Key::Tab));
     emitButton(out, InputButton::Reset, keyDown(Key::R));
+    emitButton(out, InputButton::NextFlyByWire, keyDown(Key::Period));
+    emitButton(out, InputButton::PrevFlyByWire, keyDown(Key::Comma));
     emitButton(out, InputButton::PrevVehicle, keyDown(Key::LBracket));
     emitButton(out, InputButton::NextVehicle, keyDown(Key::RBracket));
     emitButton(out, InputButton::ToggleBenchmark, keyDown(Key::B));
