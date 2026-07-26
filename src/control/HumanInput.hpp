@@ -1,0 +1,58 @@
+#pragma once
+
+#include <array>
+#include <cstddef>
+
+#include "control/Controller.hpp"
+#include "core/Command.hpp"
+
+namespace rf {
+
+// The current position of every stick and button, rebuilt from the command
+// stream. Lives on the simulation side: the render thread only forwards raw
+// axis values, and what they *mean* is decided here.
+struct InputState {
+    std::array<Real, static_cast<std::size_t>(InputAxis::Count)>   axes{};
+    std::array<bool, static_cast<std::size_t>(InputButton::Count)> buttons{};
+
+    void apply(const Command& c);
+
+    Real axis(InputAxis a) const { return axes[static_cast<std::size_t>(a)]; }
+    bool button(InputButton b) const { return buttons[static_cast<std::size_t>(b)]; }
+};
+
+// Radial deadzone that rescales the remainder, so the stick still reaches full
+// deflection and there is no step at the edge of the dead region.
+Vec2 applyDeadzone(Vec2 stick, Real deadzone);
+
+// ---------------------------------------------------------------------------
+// Layer 1, human. An analogue stick maps onto Intent almost exactly: its
+// direction is where the pilot wants to accelerate and its magnitude is how
+// hard, which is precisely what Intent::Mode::Acceleration means.
+// ---------------------------------------------------------------------------
+class GamepadIntentSource final : public IntentSource {
+public:
+    explicit GamepadIntentSource(const InputState& state) : state_(&state) {}
+
+    Intent intent(const Observation& obs) override;
+
+private:
+    const InputState* state_;
+};
+
+// ---------------------------------------------------------------------------
+// Layer 3, human. Raw actuator control with the fly-by-wire bypassed: the
+// debugging path, and the "fly it yourself" path. Not the default.
+// ---------------------------------------------------------------------------
+class DirectHumanController final : public Controller {
+public:
+    explicit DirectHumanController(const InputState& state) : state_(&state) {}
+
+    ControlInput evaluate(const Observation& obs) override;
+    void         reset(std::uint64_t, const WorldConfig&) override {}
+
+private:
+    const InputState* state_;
+};
+
+}  // namespace rf

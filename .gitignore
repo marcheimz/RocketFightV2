@@ -1,0 +1,76 @@
+# ---------------------------------------------------------------------------
+# Build output
+#
+# Everything under build/ is reproducible from CMakeLists.txt, including the
+# FetchContent copies of SFML and doctest in build/_deps -- which are the reason
+# this directory is measured in hundreds of megabytes and must never be tracked.
+# ---------------------------------------------------------------------------
+build/
+build-*/
+cmake-build-*/
+out/
+install/
+
+# CMake droppings if anyone ever configures in-tree
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+cmake_install.cmake
+compile_commands.json
+
+# ---------------------------------------------------------------------------
+# Compiler and tooling artefacts
+# ---------------------------------------------------------------------------
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.gch
+*.pch
+*.d
+
+# Sanitiser / profiler / coverage output
+*.gcda
+*.gcno
+*.gcov
+*.profraw
+*.profdata
+callgrind.out.*
+perf.data
+perf.data.old
+core
+core.[0-9]*
+vgcore.*
+
+# ---------------------------------------------------------------------------
+# Editors and IDEs
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+.cache/
+.clangd/
+*.swp
+*.swo
+*~
+.ccls-cache/
+
+# ---------------------------------------------------------------------------
+# OS noise
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+
+# ---------------------------------------------------------------------------
+# Project scratch
+#
+# Recordings, captured frames and episode dumps are outputs of experiments, not
+# inputs to them. Keep them local.
+# ---------------------------------------------------------------------------
+scratch/
+*.log
+*.png
+*.replay
