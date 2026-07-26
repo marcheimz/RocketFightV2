@@ -479,6 +479,9 @@ void Renderer::drawHud(sf::RenderWindow& window, const Snapshot& snap, const Cam
     os << std::fixed << std::setprecision(1);
 
     os << (hud.flyByWire ? "FLY-BY-WIRE" : "DIRECT") << "   [Start/Tab] toggle\n";
+    os << (hud.benchmark.velocityMode ? "VELOCITY  stick = target m/s"
+                                      : "ACCELERATION  stick = fraction of max")
+       << "   [Y/V] toggle\n";
 
     if (!snap.rockets.empty()) {
         const RocketView& r = snap.rockets.front();
@@ -516,6 +519,39 @@ void Renderer::drawHud(sf::RenderWindow& window, const Snapshot& snap, const Cam
     text.setFillColor(kText);
     text.setPosition({12.f, 10.f});
     window.draw(text);
+
+    // The benchmark replaces the pilot outright while it runs, so this has to
+    // be impossible to miss: a dead stick with no explanation looks exactly like
+    // a controller that has crashed.
+    if (hud.benchmark.active) {
+        const Renderer::Benchmark& b = hud.benchmark;
+
+        std::ostringstream bs;
+        bs << std::fixed << std::setprecision(2);
+        bs << "BENCHMARK RUNNING -- pilot input ignored   [B] stop\n";
+        bs << std::setprecision(1) << "t " << b.seconds << " s   steps " << b.stepsSettled << "/"
+           << b.steps << " settled\n";
+        bs << std::setprecision(2);
+        bs << "tracking err  " << b.trackingErrorMean
+           << (hud.benchmark.velocityMode ? " m/s mean" : " m/s^2 mean") << "   now "
+           << b.currentError << "\n";
+        bs << "settling      " << b.settlingMean << " s mean\n";
+        bs << std::setprecision(0);
+        bs << "impulse       " << b.impulse << " N.s\n";
+        bs << std::setprecision(2);
+        bs << "att. wander   " << b.attitudeWander << " rad";
+
+        sf::Text benchText(*font_, bs.str(), 14);
+        // Warm, so it reads as "something else is flying" rather than as another
+        // row of telemetry.
+        benchText.setFillColor(sf::Color{255, 190, 90});
+        // Sits above the input debug overlay when that is up, rather than
+        // through it.
+        const float bottom =
+            static_cast<float>(window.getSize().y) - (hud.showInputDebug ? 54.f : 0.f);
+        benchText.setPosition({12.f, bottom - 130.f});
+        window.draw(benchText);
+    }
 
     if (hud.showInputDebug && hud.input) {
         std::ostringstream dbg;

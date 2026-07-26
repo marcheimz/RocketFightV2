@@ -93,14 +93,14 @@ src/
                 Pure C++. No SFML. No threads. No I/O. No wall clock.
   control/      IntentSource, FlyByWire, Controller; LayeredController composing the first two;
                 ThrustAllocator; RocketFlyByWire<RocketT>; human + scripted implementations;
-                name→factory registry.
+                name→factory registry; the deterministic benchmark sequence and its meter.
   sync/         StateChannel (triple buffer), CommandQueue (SPSC ring).
   sim/          SimulationLoop: real-time pacing, accumulator, publishing.
   render/       SFML window, follow-camera, actuator panel, Renderer::draw(const Snapshot&).
   app/          main(): wires window + input + sim thread.
   data/         RocketCatalogue: loads rockets/*.json into RocketSpec values.
                 The only place in the project that opens a file.
-  eval/         Scenario, Metrics, episode runner, parallel batch runner. Links core only.
+  eval/         Scenario, episode runner, parallel batch runner, benchmark runner + JSON.
 tests/          Determinism hashes, integrator accuracy, channel/queue correctness.
 ```
 
@@ -483,6 +483,160 @@ registry, plugins, or an out-of-process protocol) is left open. The `Observation
 available; milestone 1 only commits to the registry. An agent writing a controller picks its
 layer, adds a file, and registers a name.
 
+## Benchmarking a fly-by-wire
+
+The eventual shape of this is a submission server: an agent submits a `FlyByWire` implementation,
+the server compiles that one file, runs it through a fixed benchmark, and ranks it. This is the
+benchmark half.
+
+### The task: a scripted pilot
+
+`BenchmarkIntentSource` is an `IntentSource` — layer 1, the same slot the gamepad occupies. That is
+the whole design: what is being measured is the fly-by-wire, so whatever sits above it has to be
+interchangeable with a human, and the benchmark is exactly a pilot who never gets bored.
+
+It emits a step sequence:
+
+- **Acceleration mode.** Direction uniform on the circle, magnitude uniform in [0.3, 1.0] of the
+  vehicle's maximum. `Intent`'s acceleration vector is *already* normalised as a fraction of max, so
+  the band is vehicle-agnostic without the source ever asking what vehicle it is flying.
+- **Velocity mode.** Direction uniform on the circle, magnitude uniform in [0, 100] m/s. These are
+  **absolute** targets, not scaled to the airframe: in zero-g there is no maximum speed to scale
+  against, so 100 m/s is simply the band being tested — `kBenchmarkMaxSpeed`, one constant, also
+  used by the pilot's stick so hand-flying and the benchmark are the same task.
+- Each value is **held for an interval uniform in [1, 5] s**, then resampled.
+- **The two modes are never interleaved in one run.** Their commanded quantities have different
+  units; a tracking error integrated across both would be adding metres to m/s.
+- **`facing` stays empty throughout.** Where to point is the fly-by-wire's own judgement — most of
+  the job on `norcs`, barely any of it on `lander` — and this scores that judgement rather than the
+  ability to obey an attitude order.
+
+**The sequence depends on the seed alone.** Not on the vehicle, not on the rocket's state, not on
+what the controller did with the last command, and not on which tick the pilot armed it. It uses the
+project's own `Rng` (splitmix64, explicitly seeded), quantises every interval boundary to whole
+ticks, keeps its own tick counter rather than reading `obs.tick`, and takes exactly three draws per
+command in either mode — so an acceleration run and a velocity run from one seed step at the same
+instants in the same directions. Two rockets, or two submitted controllers, face a byte-identical
+task, and the tests assert that exactly rather than approximately.
+
+### What is measured, and why those four
+
+| Metric | Units | Why |
+| --- | --- | --- |
+| **Tracking error** | ∫\|commanded − actual\| dt | The task itself. Reported as an integral *and* a mean, since the integral grows with run length. |
+| **Settling time** | s, mean and worst | A controller that reaches the right answer eventually is not the same as one that reaches it. Measured per step change, from the resample to the last moment the error was outside tolerance. |
+| **Impulse used** | N·s | Two controllers that track equally well are not equally good if one burns twice the propellant. |
+| **Attitude wander** | rad | Integrated \|angular velocity\|, so it is total angle swept rather than net rotation — spinning one way and back has done the work twice. Rotation nobody asked for is wasted authority, and in a fight it is a liability. |
+
+Two things this gets deliberately right:
+
+- **It runs in the zero-g world** (`defaultWorld`, never `orbitWorld`). In an orbit gravity
+  contributes to every measured acceleration and to every velocity error, so the output would be
+  partly a score for orbital mechanics the controller was never asked to do — and not even a
+  consistent one, since the contribution depends on where in the orbit the run happened to be.
+- **Actual acceleration comes from the vehicle, not from differencing positions.** `ThrusterState`
+  carries the thrust actually being produced and the angle the nozzle has actually reached, which is
+  precisely what `Rocket::applyControls` turns into force. Summing that wrench measures the vehicle;
+  differencing a trajectory would measure the integrator, and would fold in anything else that was
+  pushing.
+
+An unsettled step is charged the whole hold interval rather than dropped, which is a floor on the
+truth — dropping it would let a controller that *never* settles outscore one that settles slowly, by
+contributing no samples at all. `settled_fraction` is reported next to it so the two are separable.
+
+**The components are the output.** There is a `score`, but it is a weighted sum of published
+components with the weights shipped beside them, so an archive of results can be re-ranked without
+re-running anything. The weights are a placeholder and are meant to be overruled once there are real
+submissions to look at.
+
+### Where it lives, and why
+
+`control/Benchmark.{hpp,cpp}` holds the sequence and the meter; `eval/BenchmarkRunner.{hpp,cpp}`
+holds the runner.
+
+The split is forced by the target graph, and keeping it honest was the point. The benchmark has to be
+drivable from **`rf_sim`** (live, in the window) *and* **`rf_eval`** (headless), and `rf_sim` links
+`rf_control` but not `rf_eval`. Putting the generator in `control/`, next to `ScriptedControllers`,
+reaches both without a new edge — and without `rf_sim` picking up, through `rf_eval → rf_data`, a
+dependency on file I/O it has no business having. What stayed in `eval/` is the half that builds a
+`World` and loops it, which is the half `rf_sim` already has its own version of and must not gain a
+second copy of.
+
+Nothing was added to `core/` except two `InputButton` names, which is where the input vocabulary
+already lives.
+
+### Headless: `rocketfight_bench`
+
+```sh
+./build/rocketfight_bench --rocket=classic --mode=accel --seconds=60 --seed=7
+./build/rocketfight_bench --all --mode=velocity --compact
+```
+
+| Flag | Default | Effect |
+| --- | --- | --- |
+| `--rocket=NAME` | first in the catalogue | which airframe |
+| `--all` | off | sweep every rocket in the catalogue |
+| `--mode=accel\|velocity` | `accel` | which of the two experiments |
+| `--seconds=N` | 60 | simulated seconds per run |
+| `--seed=N` | fixed default | the sequence; accepts `0x…` |
+| `--compact` | off | one line instead of indented |
+
+JSON on stdout, and nothing else:
+
+```jsonc
+{
+  "benchmark": "flybywire-tracking",
+  "version": 1,
+  "world": "zero-g",
+  "config": {
+    "mode": "acceleration", "seed": 7, "seconds": 60.0,
+    "hold_seconds": [1.0, 5.0],
+    "accel_fraction_of_max": [0.3, 1.0],
+    "velocity_max_mps": 100.0,
+    "accel_settle_fraction": 0.1,
+    "velocity_settle_tolerance_mps": 5.0,
+    "control_hz": 100.0
+  },
+  "score_weights": { "tracking": 1.0, "settling": 1.0, "impulse": 1e-05, "wander": 1.0 },
+  "runs": [
+    {
+      "rocket": "classic", "mode": "acceleration", "seed": 7,
+      "ticks": 60000, "seconds": 60.0,
+      // Determinism, provable rather than promised: same binary, same seed,
+      // same vehicle => same hash. Hex string, because a 64-bit integer does
+      // not survive a JSON parser whose number type is a double.
+      "state_hash": "0x160d0a56702ae11c",
+      "metrics": {
+        "tracking_error_integral": 647.27, "tracking_error_mean": 10.79,
+        "settling_time_mean_s": 1.40,     "settling_time_worst_s": 2.08,
+        "settled_fraction": 0.79,         "steps": 19, "steps_settled": 15,
+        "impulse_ns": 1033804.4,          "mean_thrust_n": 17230.1,
+        "attitude_wander_rad": 36.37,     "mean_ang_rate_rad_s": 0.606
+      },
+      "score": 12.97
+    }
+  ]
+}
+```
+
+A bad flag or an unknown rocket prints `{"error": "..."}` and exits non-zero — still JSON, because
+the thing reading this is a program.
+
+### Live, in the window
+
+The same benchmark runs in the game, driven from the pad. `B` arms it; while it runs it **replaces**
+the pilot, and the HUD says so in as many words, because a dead stick with no explanation looks
+exactly like a controller that has crashed. `Y` toggles acceleration versus velocity mode, and that
+applies to the human too: in velocity mode the left stick commands a target velocity scaled to the
+same 100 m/s band. `X` / `KillVelocity` is untouched and stays a momentary "null my velocity" in
+either mode.
+
+Live metrics reach the renderer as relaxed atomics on `SimulationLoop` rather than in the `Snapshot`
+or through a third channel: the snapshot is the *world's* state and the benchmark is not part of the
+world, and a reader that sees one field a control step out of date is showing a HUD nobody can
+perceive is stale. The input layering is intact — `InputTranslator` gained two buttons and still
+reports only that a button went down.
+
 ## Determinism
 
 Target: **same machine, same binary, bit-exact.** Enough for replays, regression tests, ranking
@@ -507,6 +661,7 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build -j
 ./build/rocketfight            # windowed, human controller
 ./build/rocketfight_eval       # headless batch, no window
+./build/rocketfight_bench      # headless fly-by-wire benchmark, JSON on stdout
 ctest --test-dir build
 ```
 
@@ -552,14 +707,17 @@ cheap to add once the plumbing underneath them is right, and expensive to retrof
       a `HumanIntentSource` (keyboard → `Intent`), a `RocketFlyByWire` (PD attitude hold + throttle
       law), a `DirectHumanController` for raw manual flight, a trivial scripted end-to-end
       controller to prove the interface is not player-shaped, and the name→factory registry
-- [x] `eval`: episode runner + parallel `runBatch` over N worlds, reporting ticks/s and hashes,
-      no metrics yet
+- [x] `eval`: episode runner + parallel `runBatch` over N worlds, reporting ticks/s and hashes, plus
+      a deterministic fly-by-wire benchmark (`rocketfight_bench`) reporting tracking error, settling
+      time, impulse and attitude wander as JSON
 - [x] `tests`: determinism (double-run hash equality), integrator accuracy against a closed-form
       circular orbit, `StateChannel`/`CommandQueue` correctness under real thread contention,
       torque from off-centre force, out-of-bounds termination, a fly-by-wire convergence test
       (commanded acceleration is achieved within a tolerance, and heading settles without
-      oscillating), thruster-name parsing and defaulting, and changing vehicle across the command
-      queue on a live simulation thread
+      oscillating), thruster-name parsing and defaulting, changing vehicle across the command queue
+      on a live simulation thread, and the benchmark's own reproducibility — same seed giving a
+      bit-identical command sequence and state hash, different seeds giving different ones, and the
+      sequence being provably independent of the vehicle
 
 Deferred by design: collisions, projectiles, fuel, metrics and scoring, learned controllers,
 multiple rockets, render interpolation.
@@ -575,9 +733,11 @@ would win, which looks precisely like a stuck stick.
 
 | Gamepad | Keyboard | Effect |
 | --- | --- | --- |
-| left stick | `W` `A` `S` `D` | desired acceleration: direction *and* fraction of max |
+| left stick | `W` `A` `S` `D` | in acceleration mode: desired acceleration, direction *and* fraction of max. In velocity mode: desired velocity, up to 100 m/s at full deflection |
 | right stick | arrow keys | desired facing; released (centred) hands attitude back to the fly-by-wire |
-| `X` | `X` | kill relative velocity (`Mode::Velocity`, target zero) |
+| `X` | `X` | kill relative velocity (`Mode::Velocity`, target zero). Momentary, and it wins in either mode |
+| `Y` | `V` | acceleration ⟷ velocity mode, for the pilot *and* the benchmark |
+| `B` | `B` | arm/disarm the benchmark. While armed it replaces the pilot entirely |
 
 **Direct** — raw `ControlInput`, fly-by-wire bypassed:
 
@@ -630,13 +790,15 @@ Measured on a 20-core machine:
 - **Simulation:** a steady 1000.0 Hz at 0.0% of the tick budget, no catch-up resyncs.
 - **Rendering:** 120 fps against vsync, snapshot age under 0.01 ms — the renderer is never more
   than a single tick behind, which is why it needs no interpolation.
-- **Headless:** 91 M ticks/s across the pool, ~91,000x real time, sweeping every controller
+- **Headless:** 92 M ticks/s across the pool, ~92,000x real time, sweeping every controller
   against every rocket in both worlds, with identical jobs producing identical state hashes.
-- **Tests:** 64 cases, 2520 assertions, all passing.
+- **Benchmark:** a 60 s run per vehicle in about 20 ms single-threaded, byte-identical across runs.
+- **Tests:** 79 cases, 16918 assertions, all passing.
 
 Physics, determinism and data-loading are asserted tightly. The closed-loop flying checks are
 deliberately loose — they exist to catch "this vehicle cannot be flown at all", not to pin a set of
 gains that is expected to be optimised against metrics later.
 
-Next up: brute-force optimisation of the fly-by-wire against the actuator constraints, and then
-whatever else you want to experiment with — collisions, projectiles, scoring, learned controllers.
+Next up: brute-force optimisation of the fly-by-wire against `rocketfight_bench`, the submission
+server that drives it, and then whatever else you want to experiment with — collisions, projectiles,
+learned controllers.

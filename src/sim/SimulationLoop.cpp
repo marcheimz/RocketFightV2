@@ -36,8 +36,10 @@ SimulationLoop::SimulationLoop(WorldConfig cfg, StateChannel& state, CommandQueu
     // No vehicle named here either: the fly-by-wire is built from the world's
     // rocket at reset, so changing the vehicle changes how it flies without
     // touching the loop.
-    layered_ = std::make_unique<LayeredController>(std::make_unique<GamepadIntentSource>(input_));
-    direct_  = std::make_unique<DirectHumanController>(input_);
+    auto human = std::make_unique<GamepadIntentSource>(input_);
+    human_     = human.get();
+    layered_   = std::make_unique<LayeredController>(std::move(human));
+    direct_    = std::make_unique<DirectHumanController>(input_);
 
     restart();
 }
@@ -48,7 +50,12 @@ void SimulationLoop::setWorldRoster(std::vector<WorldConfig> roster, std::size_t
 }
 
 Controller& SimulationLoop::activeController() {
-    return flyByWire_.load(std::memory_order_relaxed) ? *layered_
+    // The benchmark outranks both human paths, including direct: what it is
+    // measuring is the fly-by-wire, and letting the sticks half-fly it during a
+    // scored run would produce a number that means nothing.
+    if (benchmarkActive_.load(std::memory_order_relaxed)) return bench_.controller();
+
+    return flyByWire_.load(std::memory_order_relaxed) ? static_cast<Controller&>(*layered_)
                                                       : static_cast<Controller&>(*direct_);
 }
 
@@ -58,7 +65,33 @@ void SimulationLoop::restart() {
     // that skipped this would fly the new airframe with the old one's numbers.
     layered_->reset(world_.config().seed, world_.config());
     direct_->reset(world_.config().seed, world_.config());
+
+    // The benchmark refits too, and its metrics start over: a score that spanned
+    // two airframes would not be a score for either.
+    bench_.reset(world_.config());
     held_ = {};
+}
+
+void SimulationLoop::setBenchmarkActive(bool on) {
+    benchmarkActive_.store(on, std::memory_order_relaxed);
+    // Arming restarts the sequence from its seed, so the run in the window is
+    // the same run the headless binary reports for this vehicle and seed.
+    bench_.reset(world_.config());
+    held_ = {};
+    publishBenchmarkHud();
+}
+
+void SimulationLoop::setVelocityMode(bool on) {
+    velocityMode_.store(on, std::memory_order_relaxed);
+
+    // The mode belongs to the ship, not to whoever happens to be flying it: the
+    // pilot's stick and the benchmark's script both mean the same thing by a
+    // vector afterwards. KillVelocity is untouched and stays momentary.
+    const Intent::Mode mode = on ? Intent::Mode::Velocity : Intent::Mode::Acceleration;
+    human_->setMode(mode);
+    bench_.setMode(mode);
+    held_ = {};
+    publishBenchmarkHud();
 }
 
 void SimulationLoop::cycleVehicle(int step) {
@@ -93,6 +126,12 @@ void SimulationLoop::handleCommand(const Command& c) {
                                  std::memory_order_relaxed);
                 held_ = {};
                 return;
+            case InputButton::ToggleBenchmark:
+                setBenchmarkActive(!benchmarkActive_.load(std::memory_order_relaxed));
+                return;
+            case InputButton::ToggleVelocityMode:
+                setVelocityMode(!velocityMode_.load(std::memory_order_relaxed));
+                return;
             default:
                 break;
         }
@@ -109,6 +148,12 @@ void SimulationLoop::tickOnce() {
     }
     world_.setControl(0, held_);
     world_.step(kTickDt);
+
+    // Sampled after the step and at the full tick rate, exactly as the headless
+    // runner does it, so the live numbers are the same numbers.
+    if (benchmarkActive_.load(std::memory_order_relaxed)) {
+        bench_.sample(world_.observe(0), kTickDt);
+    }
 }
 
 void SimulationLoop::publish(const SimStats& stats) {
@@ -116,6 +161,35 @@ void SimulationLoop::publish(const SimStats& stats) {
     world_.snapshot(slot);
     slot.stats = stats;
     state_->publish();
+
+    publishBenchmarkHud();
+}
+
+void SimulationLoop::publishBenchmarkHud() {
+    const BenchmarkMetrics& m = bench_.monitor().metrics();
+    hudError_.store(bench_.monitor().currentError(), std::memory_order_relaxed);
+    hudTracking_.store(m.trackingErrorMean, std::memory_order_relaxed);
+    hudSettling_.store(m.settlingMean, std::memory_order_relaxed);
+    hudImpulse_.store(m.impulse, std::memory_order_relaxed);
+    hudWander_.store(m.attitudeWander, std::memory_order_relaxed);
+    hudSeconds_.store(m.seconds, std::memory_order_relaxed);
+    hudSteps_.store(m.steps, std::memory_order_relaxed);
+    hudSettled_.store(m.stepsSettled, std::memory_order_relaxed);
+}
+
+BenchmarkHudState SimulationLoop::benchmarkHud() const {
+    BenchmarkHudState s;
+    s.active            = benchmarkActive_.load(std::memory_order_relaxed);
+    s.velocityMode      = velocityMode_.load(std::memory_order_relaxed);
+    s.currentError      = hudError_.load(std::memory_order_relaxed);
+    s.trackingErrorMean = hudTracking_.load(std::memory_order_relaxed);
+    s.settlingMean      = hudSettling_.load(std::memory_order_relaxed);
+    s.impulse           = hudImpulse_.load(std::memory_order_relaxed);
+    s.attitudeWander    = hudWander_.load(std::memory_order_relaxed);
+    s.seconds           = hudSeconds_.load(std::memory_order_relaxed);
+    s.steps             = hudSteps_.load(std::memory_order_relaxed);
+    s.stepsSettled      = hudSettled_.load(std::memory_order_relaxed);
+    return s;
 }
 
 void SimulationLoop::run() {

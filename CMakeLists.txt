@@ -105,11 +105,18 @@ target_link_libraries(rf_sync INTERFACE rf_core Threads::Threads)
 # ---------------------------------------------------------------------------
 # rf_control -- the three control layers. Still no SFML.
 # ---------------------------------------------------------------------------
+#
+# Benchmark.cpp is here rather than in rf_eval because rf_sim (the live game)
+# and rf_eval (the headless harness) both have to drive the identical scripted
+# sequence, and rf_sim links rf_control but not rf_eval. Putting it here reaches
+# both without a new edge -- and without rf_sim picking up, through
+# rf_eval -> rf_data, a dependency on file I/O.
 add_library(rf_control STATIC
     src/control/ThrustAllocator.cpp
     src/control/RocketFlyByWire.cpp
     src/control/HumanInput.cpp
     src/control/ScriptedControllers.cpp
+    src/control/Benchmark.cpp
     src/control/Registry.cpp
 )
 target_link_libraries(rf_control PUBLIC rf_core PRIVATE rf_warnings)
@@ -120,6 +127,7 @@ target_link_libraries(rf_control PUBLIC rf_core PRIVATE rf_warnings)
 add_library(rf_eval STATIC
     src/eval/EpisodeRunner.cpp
     src/eval/BatchRunner.cpp
+    src/eval/BenchmarkRunner.cpp
 )
 target_link_libraries(rf_eval PUBLIC rf_core rf_control rf_data Threads::Threads PRIVATE rf_warnings)
 
@@ -151,6 +159,12 @@ target_link_libraries(rocketfight PRIVATE rf_core rf_sim rf_render rf_control rf
 add_executable(rocketfight_eval src/eval/main.cpp)
 target_link_libraries(rocketfight_eval PRIVATE rf_core rf_eval rf_control rf_data rf_warnings)
 
+# The headless benchmark. JSON on stdout, no window, no clock -- shaped for a
+# submission server to drive rather than for a person to read.
+add_executable(rocketfight_bench src/eval/bench_main.cpp)
+target_link_libraries(rocketfight_bench PRIVATE
+    rf_core rf_eval rf_control rf_data nlohmann_json::nlohmann_json rf_warnings)
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -167,6 +181,7 @@ add_executable(rf_tests
     tests/test_actuators.cpp
     tests/test_data.cpp
     tests/test_sim.cpp
+    tests/test_benchmark.cpp
 )
 target_link_libraries(rf_tests PRIVATE
     rf_core rf_control rf_data rf_sim rf_sync rf_eval doctest::doctest Threads::Threads rf_warnings)

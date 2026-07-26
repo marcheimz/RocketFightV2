@@ -22,6 +22,24 @@ class Renderer {
 public:
     Renderer();
 
+    // What the benchmark is doing, in the renderer's own words. Deliberately a
+    // plain struct restated here rather than the control layer's type: rf_render
+    // links rf_core and SFML and nothing else, and a HUD readout is not a reason
+    // to change that. main() copies the fields across, and it is the layer that
+    // legitimately sees both sides.
+    struct Benchmark {
+        bool          active{};
+        bool          velocityMode{};
+        Real          currentError{};
+        Real          trackingErrorMean{};
+        Real          settlingMean{};
+        Real          impulse{};
+        Real          attitudeWander{};
+        Real          seconds{};
+        std::uint32_t steps{};
+        std::uint32_t stepsSettled{};
+    };
+
     // Facts the renderer needs that are not part of the simulated world.
     struct Hud {
         bool        flyByWire{true};
@@ -30,6 +48,7 @@ public:
         std::string inputDevice{"none"};
         bool        showInputDebug{false};
         const InputTranslator::Debug* input{nullptr};
+        Benchmark   benchmark{};
     };
 
     void draw(sf::RenderWindow& window, const Snapshot& snap, const Camera& camera, const Hud& hud);

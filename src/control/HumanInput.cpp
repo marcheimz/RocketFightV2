@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "control/Benchmark.hpp"   // kBenchmarkMaxSpeed: one band, both pilots
+
 namespace rf {
 
 namespace {
@@ -37,15 +39,24 @@ Vec2 applyDeadzone(Vec2 stick, Real deadzone) {
 Intent GamepadIntentSource::intent(const Observation&) {
     Intent out;
 
+    const Vec2 stick = applyDeadzone(
+        {state_->axis(InputAxis::MoveX), state_->axis(InputAxis::MoveY)}, kMoveDeadzone);
+
     if (state_->button(InputButton::KillVelocity)) {
         // Match velocity with the origin frame. One button, and the fly-by-wire
-        // works out which way to point and how hard to burn.
+        // works out which way to point and how hard to burn. Momentary, and it
+        // wins in either mode -- it is the one command a pilot reaches for
+        // without wanting to think about what mode they left the ship in.
         out.mode   = Intent::Mode::Velocity;
         out.vector = {};
+    } else if (mode_ == Intent::Mode::Velocity) {
+        // Full deflection is the top of the same band the benchmark samples, so
+        // hand-flying and the scripted run are the same task at the same scale.
+        out.mode   = Intent::Mode::Velocity;
+        out.vector = stick * kBenchmarkMaxSpeed;
     } else {
         out.mode   = Intent::Mode::Acceleration;
-        out.vector = applyDeadzone({state_->axis(InputAxis::MoveX), state_->axis(InputAxis::MoveY)},
-                                   kMoveDeadzone);
+        out.vector = stick;
     }
 
     const Vec2 aim{state_->axis(InputAxis::AimX), state_->axis(InputAxis::AimY)};

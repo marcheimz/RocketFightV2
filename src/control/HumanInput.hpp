@@ -36,8 +36,16 @@ public:
 
     Intent intent(const Observation& obs) override;
 
+    // Which of Intent's two modes the stick means. Latched on the simulation
+    // side, because a toggle is an edge and InputState only carries levels --
+    // and because the benchmark has to be able to fly in the same mode the pilot
+    // is in, which is a decision neither source can make alone.
+    void         setMode(Intent::Mode m) { mode_ = m; }
+    Intent::Mode mode() const { return mode_; }
+
 private:
     const InputState* state_;
+    Intent::Mode      mode_{Intent::Mode::Acceleration};
 };
 
 // ---------------------------------------------------------------------------

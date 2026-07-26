@@ -177,6 +177,20 @@ int main(int argc, char** argv) {
         hud.showInputDebug = showInputDebug;
         hud.input          = &input.debug();
 
+        // The one place that sees both the control layer's benchmark state and
+        // the renderer's HUD struct, which is why the copy happens here.
+        const rf::BenchmarkHudState bench = sim.benchmarkHud();
+        hud.benchmark.active            = bench.active;
+        hud.benchmark.velocityMode      = bench.velocityMode;
+        hud.benchmark.currentError      = bench.currentError;
+        hud.benchmark.trackingErrorMean = bench.trackingErrorMean;
+        hud.benchmark.settlingMean      = bench.settlingMean;
+        hud.benchmark.impulse           = bench.impulse;
+        hud.benchmark.attitudeWander    = bench.attitudeWander;
+        hud.benchmark.seconds           = bench.seconds;
+        hud.benchmark.steps             = bench.steps;
+        hud.benchmark.stepsSettled      = bench.stepsSettled;
+
         renderer.draw(window, snap, camera, hud);
         window.display();
     }
