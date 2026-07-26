@@ -20,10 +20,22 @@
       "ignition_time": 0.35,
       "ramp_up": 90000.0,
       "ramp_down": 160000.0,
-      // A much wider gimbal to compensate for having nothing else, but a slow
-      // one: authority is not the same as responsiveness.
-      "gimbal_deg": 20.0,
-      "gimbal_rate_deg": 25.0
+      // Nearly a quarter-turn of deflection: this nozzle can point the thrust
+      // almost sideways, so the vehicle is far less bound to pushing along its
+      // nose than a small-gimbal airframe. The rate is doubled to match.
+      //
+      // 80 rather than 90 on purpose: at exactly a quarter turn the thrust is
+      // perpendicular to the hull and contributes nothing forward at all, which
+      // is a degenerate corner for an engine that is also the only way this
+      // vehicle accelerates. 80 keeps a usable forward component (cos 80 = 0.17)
+      // while giving up almost no torque (sin 80 = 0.98).
+      //
+      // Note the trade. Reversing the nozzle now sweeps 160 degrees instead of
+      // 40, so at 50 deg/s a full reversal takes 3.2 s against the old 1.6 s --
+      // the range grew faster than the rate did. More authority, and more dead
+      // time to spend it through.
+      "gimbal_deg": 80.0,
+      "gimbal_rate_deg": 90.0
     }
   ]
 }
